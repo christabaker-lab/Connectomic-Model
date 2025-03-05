@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Connectomics Model Simulation</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .form-section { display: flex; justify-content: space-between; }
+        .neuron-config, .model-params { width: 45%; }
+        .plot-section { display: flex; justify-content: space-between; margin-top: 20px; }
+        .plot { width: 48%; }
+        .plot img { max-width: 100%; }
+        input[type="checkbox"] { margin-right: 10px; }
+        .form-group { margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Connectomics Model Simulation</h1>
+
+    {% if error %}
+    <div style="color: red;">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST">
+        <div class="form-section">
+            <div class="neuron-config">
+                <h2>Neuron Configuration</h2>
+                
+                <div class="form-group">
+                    <label>Neuron Group:</label>
+                    <select name="neuron_group">
+                        {% for group in neuron_groups %}
+                        <option value="{{ group }}" {% if group == config.neuron_group_activation %}selected{% endif %}>
+                            {{ group }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <input type="checkbox" name="both_sides" {% if config.activate_both_sides %}checked{% endif %}>
+                    <label>Activate Both Sides</label>
+                </div>
+
+                <div class="form-group">
+                    <label>Activation Side:</label>
+                    <select name="side" {% if config.activate_both_sides %}disabled{% endif %}>
+                        <option value="L" {% if config.activation_side == 'L' %}selected{% endif %}>Left</option>
+                        <option value="R" {% if config.activation_side == 'R' %}selected{% endif %}>Right</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <input type="checkbox" name="random_selection" {% if config.random_selection %}checked{% endif %}>
+                    <label>Random Neuron Selection</label>
+                </div>
+
+                <div class="form-group">
+                    <label>Random Selection Percentage:</label>
+                    <input type="number" name="random_percent" 
+                           value="{{ config.random_selection_percent }}" 
+                           min="1" max="100" step="1">%
+                </div>
+            </div>
+
+            <div class="model-params">
+                <h2>Model Parameters</h2>
+                
+                <div class="form-group">
+                    <label>Trial Duration (ms):</label>
+                    <input type="number" name="t_run" value="{{ model_params.t_run / ms }}" step="10">
+                </div>
+
+                <div class="form-group">
+                    <label>Poisson Input Rate (Hz):</label>
+                    <input type="number" name="r_poi" value="{{ model_params.r_poi / Hz }}" step="10">
+                </div>
+
+                <div class="form-group">
+                    <label>Synapse Weight (mV):</label>
+                    <input type="number" name="w_syn" value="{{ model_params.w_syn / mV }}" step="0.1">
+                </div>
+
+                <div class="form-group">
+                    <label>Time Constant (ms):</label>
+                    <input type="number" name="tau" value="{{ model_params.tau / ms }}" step="1">
+                </div>
+            </div>
+        </div>
+
+        <div class="submit-section">
+            <input type="submit" value="Run Simulation">
+        </div>
+    </form>
+
+    {% if spike_raster and connection_graph %}
+    <div class="plot-section">
+        <div class="plot">
+            <h2>Spike Raster Plot</h2>
+            <img src="data:image/png;base64,{{ spike_raster }}" alt="Spike Raster">
+        </div>
+        <div class="plot">
+            <h2>Connection Graph</h2>
+            <img src="data:image/png;base64,{{ connection_graph }}" alt="Connection Graph">
+        </div>
+    </div>
+
+    <div class="activated-neurons">
+        <h2>Activated Neurons</h2>
+        <p>{{ activated_neurons }}</p>
+    </div>
+    {% endif %}
+</body>
+</html>
