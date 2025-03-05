@@ -4,6 +4,7 @@ import base64
 from flask import Flask, render_template, request, jsonify
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+from brian2 import mV, ms, Hz
 
 # Import the ConnectomicsModel from the previous script
 from connectomics_model import ConnectomicsModel
@@ -23,7 +24,7 @@ def fig_to_base64(fig):
 @app.route('/', methods=['GET', 'POST'])
 def index():
     # Get list of neuron groups for dropdown
-    neuron_groups = list(model.neuron_groupings.keys())
+    neuron_groups = model.neuron_groupings
     
     # Default parameters
     default_config = {
@@ -71,7 +72,7 @@ def index():
             plt.close(spike_raster_fig)
 
             # Generate connection graph
-            connection_graph_fig = model.plot_connection_graph()
+            connection_graph_fig = model.plot_connection_graph(data_path='data')
             connection_graph_base64 = fig_to_base64(connection_graph_fig)
             plt.close(connection_graph_fig)
 
@@ -81,16 +82,26 @@ def index():
                                    model_params=custom_params,
                                    spike_raster=spike_raster_base64,
                                    connection_graph=connection_graph_base64,
-                                   activated_neurons=labels)
+                                   activated_neurons=labels, 
+                                   ms=ms, 
+                                   mV=mV,
+                                   Hz=Hz)
         except Exception as e:
             return render_template('index.html', 
                                    neuron_groups=neuron_groups, 
-                                   error=str(e))
+                                   error=str(e),
+                                   model_params=default_model_params,
+                                   ms=ms, 
+                                   mV=mV,
+                                   Hz=Hz)
 
     return render_template('index.html', 
                            neuron_groups=neuron_groups, 
                            config=default_config,
-                           model_params=default_model_params)
+                           model_params=default_model_params, 
+                            ms=ms, 
+                            mV=mV,
+                            Hz=Hz)
 
 if __name__ == '__main__':
     app.run(debug=True)
