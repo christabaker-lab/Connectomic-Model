@@ -11,7 +11,7 @@ from connectomics_model import ConnectomicsModel
 app = Flask(__name__)
 
 # Initialize the model
-model = ConnectomicsModel()
+model = ConnectomicsModel('data')
 
 def fig_to_base64(fig):
     """Convert matplotlib figure to base64 encoded image"""
