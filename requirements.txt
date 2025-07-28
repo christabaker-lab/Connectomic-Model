@@ -6,3 +6,4 @@ brian2
 networkx
 tqdm
 scipy
+fafbseg
