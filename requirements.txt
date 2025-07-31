@@ -9,3 +9,5 @@ pyvis
 networkx
 requests
 beautifulsoup4
+scipy
+fafbseg
