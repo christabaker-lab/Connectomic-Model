@@ -1,359 +1,185 @@
-<!DOCTYPE html>
+<div class="save-notice">
+    <strong>Note:</strong> All simulation results are automatically saved with timestamps in the 'simulation_results' folder.
+    {% if simulation_run %}
+    <br><strong style="color: #2e7d32;">✓ Simulation completed successfully!</strong>
+    {% elif simulation_run == False %}
+    <br><em>Ready to run simulation - click "Run Simulation" button below.</em>
+    {% endif %}
+</div><!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Drosophila Connectomics Model Simulation</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .brain-sections { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
-        .brain-hemisphere { flex: 1; min-width: 320px; border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #f9f9f9; }
-        .hemisphere-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; }
-        .hemisphere-title h2 { margin: 0; color: #333; }
-        .config-table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
-        .config-table th, .config-table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-        .config-table th { background-color: #f2f2f2; }
-        .config-controls { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
-        .group-row { background-color: white; margin-bottom: 10px; border: 1px solid #eee; border-radius: 4px; }
-        
-        .model-params { margin-top: 30px; border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #f9f9f9; }
-        .params-section { display: flex; flex-wrap: wrap; gap: 20px; }
-        .param-group { min-width: 200px; flex: 1; }
-        
-        .plot-section { display: flex; justify-content: space-between; flex-wrap: wrap; margin-top: 30px; }
-        .plot { width: 48%; min-width: 300px; margin-bottom: 20px; }
-        .plot img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
-        
-        .error { color: red; font-weight: bold; margin-bottom: 15px; }
-        .submit-section { margin: 20px 0; }
-        input[type="submit"] { padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 4px; }
-        input[type="submit"]:hover { background-color: #45a049; }
-        input[type="number"] { padding: 5px; width: 80px; }
-        select { padding: 5px; width: 150px; }
-        
-        .add-group-btn, .remove-group-btn { 
-            padding: 5px 10px; 
-            border: none; 
-            border-radius: 4px; 
-            cursor: pointer; 
-            margin-left: 5px; 
-        }
-        .add-group-btn { background-color: #4CAF50; color: white; }
-        .add-group-btn:hover { background-color: #45a049; }
-        .remove-group-btn { background-color: #f44336; color: white; }
-        .remove-group-btn:hover { background-color: #d32f2f; }
-        
-        .activated-neurons { margin-top: 20px; }
-        .side-toggle-switch { display: flex; align-items: center; }
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 60px;
-            height: 30px;
-            margin-left: 10px;
-        }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: .4s;
-            border-radius: 34px;
-        }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 22px;
-            width: 22px;
-            left: 4px;
-            bottom: 4px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-        input:checked + .slider { background-color: #2196F3; }
-        input:checked + .slider:before { transform: translateX(30px); }
-        
-        @media (max-width: 768px) {
-            .brain-sections { flex-direction: column; }
-            .plot { width: 100%; }
-        }
+<meta charset="UTF-8">
+<title>Drosophila Connectomics Model Simulation</title>
+<style>
+    body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
+    .brain-sections { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
+    .brain-hemisphere { flex: 1; min-width: 320px; border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #f9f9f9; }
+    .hemisphere-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; }
+    .hemisphere-title h2 { margin: 0; color: #333; }
+    .config-table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+    .config-table th, .config-table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+    .config-table th { background-color: #f2f2f2; }
+    .config-controls { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+    .group-row { background-color: white; margin-bottom: 10px; border: 1px solid #eee; border-radius: 4px; }
+    
+    .model-params { margin-top: 30px; border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #f9f9f9; }
+    .params-section { display: flex; flex-wrap: wrap; gap: 20px; }
+    .param-group { min-width: 200px; flex: 1; }
+    
+    .plot-section { display: flex; justify-content: center; flex-wrap: wrap; margin-top: 30px; }
+    .plot { width: 80%; min-width: 600px; margin-bottom: 20px; }
+    .plot img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
+    
+    .error { color: red; font-weight: bold; margin-bottom: 15px; }
+    .submit-section { margin: 20px 0; }
+    input[type="submit"] { padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 4px; }
+    input[type="submit"]:hover { background-color: #45a049; }
+    input[type="number"] { padding: 5px; width: 80px; }
+    select { padding: 5px; width: 150px; }
+    
+    .add-group-btn, .remove-group-btn { 
+        padding: 5px 10px; 
+        border: none; 
+        border-radius: 4px; 
+        cursor: pointer; 
+        margin-left: 5px; 
+    }
+    .add-group-btn { background-color: #4CAF50; color: white; }
+    .add-group-btn:hover { background-color: #45a049; }
+    .remove-group-btn { background-color: #f44336; color: white; }
+    .remove-group-btn:hover { background-color: #d32f2f; }
+    
+    .activated-neurons { margin-top: 20px; }
+    .side-toggle-switch { display: flex; align-items: center; }
+    .switch {
+        position: relative;
+        display: inline-block;
+        width: 60px;
+        height: 30px;
+        margin-left: 10px;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+        border-radius: 34px;
+    }
+    .slider:before {
+        position: absolute;
+        content: "";
+        height: 22px;
+        width: 22px;
+        left: 4px;
+        bottom: 4px;
+        background-color: white;
+        transition: .4s;
+        border-radius: 50%;
+    }
+    input:checked + .slider { background-color: #2196F3; }
+    input:checked + .slider:before { transform: translateX(30px); }
+    
+    @media (max-width: 768px) {
+        .brain-sections { flex-direction: column; }
+        .plot { width: 100%; }
+    }
 
-        .neuron-list {
-            margin-top: 10px;
-        }
-        
-        .neuron-list h4 {
-            margin: 10px 0 5px 0;
-            color: #333;
-            font-size: 1em;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 5px;
-        }
-        
-        .neuron-list p {
-            margin: 5px 0;
-            line-height: 1.4;
-            font-size: 0.9em;
-            max-height: 150px;
-            overflow-y: auto;
-        }
-        
-        .plot-legend ul li {
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-        }
-        
-        /* Add a visual indication of the neuron types */
-        .direct-neuron {
-            font-weight: bold;
-            color: #2048a0;
-        }
-        
-        .downstream-neuron {
-            color: #a04040;
-        }
-        
-        /* Add a counter for number of neurons */
-        .neuron-count {
-            display: inline-block;
-            background-color: #f0f0f0;
-            padding: 2px 6px;
-            border-radius: 10px;
-            font-size: 0.8em;
-            margin-left: 8px;
-            color: #333;
-        }
-    </style>
+    .neuron-list {
+        margin-top: 10px;
+    }
+    
+    .neuron-list h4 {
+        margin: 10px 0 5px 0;
+        color: #333;
+        font-size: 1em;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 5px;
+    }
+    
+    .neuron-list p {
+        margin: 5px 0;
+        line-height: 1.4;
+        font-size: 0.9em;
+        max-height: 150px;
+        overflow-y: auto;
+    }
+    
+    .plot-legend ul li {
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+    }
+    
+    /* Add a visual indication of the neuron types */
+    .user-neuron {
+        font-weight: bold;
+        color: #2048a0;
+    }
+    
+    .natural-neuron {
+        color: #a04040;
+    }
+    
+    /* Add a counter for number of neurons */
+    .neuron-count {
+        display: inline-block;
+        background-color: #f0f0f0;
+        padding: 2px 6px;
+        border-radius: 10px;
+        font-size: 0.8em;
+        margin-left: 8px;
+        color: #333;
+    }
+
+    .save-notice {
+        background-color: #e8f5e8;
+        border: 1px solid #4CAF50;
+        border-radius: 4px;
+        padding: 10px;
+        margin: 10px 0;
+        color: #2e7d32;
+    }
+</style>
 </head>
 <body>
-    <h1>Advanced Connectomics Model Simulation</h1>
+<h1>Advanced Connectomics Model Simulation</h1>
 
-    {% if error %}
-    <div class="error">Error: {{ error }}</div>
-    {% endif %}
+{% if error %}
+<div class="error">Error: {{ error }}</div>
+{% endif %}
 
-    <form method="POST" id="simulation-form">
-        <div class="brain-sections">
-            <!-- Left Hemisphere Configuration -->
-            <div class="brain-hemisphere" id="left-hemisphere">
-                <div class="hemisphere-title">
-                    <h2>Left Hemisphere</h2>
-                    <div class="side-toggle-switch">
-                        <span>Activate</span>
-                        <label class="switch">
-                            <input type="checkbox" id="left-active" name="left_active" checked>
-                            <span class="slider"></span>
-                        </label>
-                    </div>
+{% if session.get('error') %}
+<div class="error">Error: {{ session.pop('error') }}</div>
+{% endif %}
+
+<div class="save-notice">
+    <strong>Note:</strong> All simulation results are automatically saved with timestamps in the 'simulation_results' folder.
+</div>
+
+<form method="POST" action="/run_simulation" id="simulation-form">
+    <div class="brain-sections">
+        <!-- Left Hemisphere Configuration -->
+        <div class="brain-hemisphere" id="left-hemisphere">
+            <div class="hemisphere-title">
+                <h2>Left Hemisphere</h2>
+                <div class="side-toggle-switch">
+                    <span>Activate</span>
+                    <label class="switch">
+                        <input type="checkbox" id="left-active" name="left_active" {% if config.left_active %}checked{% endif %}>
+                        <span class="slider"></span>
+                    </label>
                 </div>
-                
-                <div id="left-groups-container">
-                    <!-- Dynamic group rows will be added here -->
-                    <div class="group-row" data-index="0">
-                        <table class="config-table">
-                            <tr>
-                                <th>Neuron Group</th>
-                                <th>Random %</th>
-                                <th>Actions</th>
-                            </tr>
-                            <tr>
-                                <td>
-                                    <select name="left_groups[0][neuron_group]" class="neuron-group-select">
-                                        {% for group in neuron_groups %}
-                                        <option value="{{ group }}">{{ group }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </td>
-                                <td>
-                                    <input type="number" name="left_groups[0][random_percent]" value="70" min="1" max="100">
-                                </td>
-                                <td>
-                                    <button type="button" class="remove-group-btn">Remove</button>
-                                </td>
-                            </tr>
-                        </table>
-                        <div class="config-controls">
-                            <div>
-                                <label>Poisson Rate (Hz): </label>
-                                <input type="number" name="left_groups[0][r_poi]" value="250" min="10" max="1000" step="10">
-                            </div>
-                            <div>
-                                <label>Synapse Weight (mV): </label>
-                                <input type="number" name="left_groups[0][w_syn]" value="0.8" min="0.1" max="10" step="0.1">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <button type="button" class="add-group-btn" id="add-left-group">Add Neuron Group</button>
             </div>
             
-            <!-- Right Hemisphere Configuration -->
-            <div class="brain-hemisphere" id="right-hemisphere">
-                <div class="hemisphere-title">
-                    <h2>Right Hemisphere</h2>
-                    <div class="side-toggle-switch">
-                        <span>Activate</span>
-                        <label class="switch">
-                            <input type="checkbox" id="right-active" name="right_active" checked>
-                            <span class="slider"></span>
-                        </label>
-                    </div>
-                </div>
-                
-                <div id="right-groups-container">
-                    <!-- Dynamic group rows will be added here -->
-                    <div class="group-row" data-index="0">
-                        <table class="config-table">
-                            <tr>
-                                <th>Neuron Group</th>
-                                <th>Random %</th>
-                                <th>Actions</th>
-                            </tr>
-                            <tr>
-                                <td>
-                                    <select name="right_groups[0][neuron_group]" class="neuron-group-select">
-                                        {% for group in neuron_groups %}
-                                        <option value="{{ group }}">{{ group }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </td>
-                                <td>
-                                    <input type="number" name="right_groups[0][random_percent]" value="70" min="1" max="100">
-                                </td>
-                                <td>
-                                    <button type="button" class="remove-group-btn">Remove</button>
-                                </td>
-                            </tr>
-                        </table>
-                        <div class="config-controls">
-                            <div>
-                                <label>Poisson Rate (Hz): </label>
-                                <input type="number" name="right_groups[0][r_poi]" value="250" min="10" max="1000" step="10">
-                            </div>
-                            <div>
-                                <label>Synapse Weight (mV): </label>
-                                <input type="number" name="right_groups[0][w_syn]" value="0.8" min="0.1" max="10" step="0.1">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <button type="button" class="add-group-btn" id="add-right-group">Add Neuron Group</button>
-            </div>
-        </div>
-
-        <div class="model-params">
-            <h2>Global Model Parameters</h2>
-            <div class="params-section">
-                <div class="param-group">
-                    <table class="config-table">
-                        <tr>
-                            <td><label for="t_run">Trial Duration (ms):</label></td>
-                            <td><input type="number" name="t_run" id="t_run" value="500" min="10" max="5000" step="10"></td>
-                        </tr>
-                        <tr>
-                            <td><label for="tau">Time Constant (ms):</label></td>
-                            <td><input type="number" name="tau" id="tau" value="5" min="1" max="100" step="1"></td>
-                        </tr>
-                    </table>
-                </div>
-                <div class="param-group">
-                    <table class="config-table">
-                        <tr>
-                            <td><label for="v_th">Threshold (mV):</label></td>
-                            <td><input type="number" name="v_th" id="v_th" value="-45" min="-60" max="-30" step="1"></td>
-                        </tr>
-                        <tr>
-                            <td><label for="t_rfc">Refractory Period (ms):</label></td>
-                            <td><input type="number" name="t_rfc" id="t_rfc" value="2.2" min="0.1" max="10" step="0.1"></td>
-                        </tr>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="submit-section">
-            <input type="submit" value="Run Simulation">
-        </div>
-    </form>
-
-    {% if spike_raster and connection_graph %}
-    <div class="plot-section">
-        <div class="plot">
-            <h2>Spike Raster Plot</h2>
-            <img src="data:image/png;base64,{{ spike_raster }}" alt="Spike Raster">
-        </div>
-        <div class="plot">
-            <h2>Connection Graph</h2>
-            <img src="data:image/png;base64,{{ connection_graph }}" alt="Connection Graph">
-        </div>
-    </div>
-
-    <div class="activated-neurons">
-        <h2>Neuron Activation Results</h2>
-        <div class="brain-sections">
-            <div class="brain-hemisphere">
-                <h3>Left Hemisphere</h3>
-                <div class="neuron-list">
-                    <h4>Directly Activated Neurons</h4>
-                    <p>{{ left_activated_neurons|join(', ') }}</p>
-                    
-                    <h4>Downstream Activated Neurons</h4>
-                    <p>{{ left_downstream_neurons|join(', ') }}</p>
-                </div>
-            </div>
-            <div class="brain-hemisphere">
-                <h3>Right Hemisphere</h3>
-                <div class="neuron-list">
-                    <h4>Directly Activated Neurons</h4>
-                    <p>{{ right_activated_neurons|join(', ') }}</p>
-                    
-                    <h4>Downstream Activated Neurons</h4>
-                    <p>{{ right_downstream_neurons|join(', ') }}</p>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Add a legend to explain the plot markers -->
-        <div class="plot-legend" style="margin-top: 20px; background-color: #f8f8f8; padding: 10px; border-radius: 5px; border: 1px solid #ddd;">
-            <h4>Spike Plot Legend</h4>
-            <ul style="list-style-type: none; padding-left: 10px;">
-                <li><span style="display: inline-block; width: 15px; height: 15px; background-color: blue; border-radius: 50%; margin-right: 10px;"></span>Left Hemisphere - Direct Activation</li>
-                <li><span style="display: inline-block; width: 15px; height: 15px; color: blue; font-weight: bold; margin-right: 10px;">×</span>Left Hemisphere - Downstream Activation</li>
-                <li><span style="display: inline-block; width: 15px; height: 15px; background-color: red; border-radius: 50%; margin-right: 10px;"></span>Right Hemisphere - Direct Activation</li>
-                <li><span style="display: inline-block; width: 15px; height: 15px; color: red; font-weight: bold; margin-right: 10px;">×</span>Right Hemisphere - Downstream Activation</li>
-            </ul>
-        </div>
-    </div>
-    {% endif %}
-
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            // Handle activation toggles
-            const leftToggle = document.getElementById('left-active');
-            const rightToggle = document.getElementById('right-active');
-            const leftHemisphere = document.getElementById('left-hemisphere');
-            const rightHemisphere = document.getElementById('right-hemisphere');
-            
-            // Functions to add/remove neuron group configurations
-            const addGroupRow = (side, index) => {
-                const container = document.getElementById(`${side}-groups-container`);
-                const newRow = document.createElement('div');
-                newRow.className = 'group-row';
-                newRow.dataset.index = index;
-                
-                // Get neuron group options
-                const groupOptions = Array.from(document.querySelectorAll('.neuron-group-select')[0].options)
-                    .map(opt => `<option value="${opt.value}">${opt.textContent}</option>`)
-                    .join('');
-                
-                newRow.innerHTML = `
+            <div id="left-groups-container">
+                <!-- Dynamic group rows will be added here -->
+                {% for group in config.left_groups %}
+                <div class="group-row" data-index="{{ loop.index0 }}">
                     <table class="config-table">
                         <tr>
                             <th>Neuron Group</th>
@@ -362,12 +188,14 @@
                         </tr>
                         <tr>
                             <td>
-                                <select name="${side}_groups[${index}][neuron_group]" class="neuron-group-select">
-                                    ${groupOptions}
+                                <select name="left_groups[{{ loop.index0 }}][neuron_group]" class="neuron-group-select">
+                                    {% for ng in neuron_groups %}
+                                    <option value="{{ ng }}" {% if ng == group.neuron_group %}selected{% endif %}>{{ ng }}</option>
+                                    {% endfor %}
                                 </select>
                             </td>
                             <td>
-                                <input type="number" name="${side}_groups[${index}][random_percent]" value="70" min="1" max="100">
+                                <input type="number" name="left_groups[{{ loop.index0 }}][random_percent]" value="{{ group.random_percent }}" min="1" max="100">
                             </td>
                             <td>
                                 <button type="button" class="remove-group-btn">Remove</button>
@@ -377,107 +205,314 @@
                     <div class="config-controls">
                         <div>
                             <label>Poisson Rate (Hz): </label>
-                            <input type="number" name="${side}_groups[${index}][r_poi]" value="250" min="10" max="1000" step="10">
+                            <input type="number" name="left_groups[{{ loop.index0 }}][r_poi]" value="{{ group.r_poi }}" min="10" max="1000" step="10">
                         </div>
                         <div>
                             <label>Synapse Weight (mV): </label>
-                            <input type="number" name="${side}_groups[${index}][w_syn]" value="0.8" min="0.1" max="10" step="0.1">
+                            <input type="number" name="left_groups[{{ loop.index0 }}][w_syn]" value="{{ group.w_syn }}" min="0.1" max="10" step="0.1">
                         </div>
                     </div>
-                `;
-                
-                container.appendChild(newRow);
-                
-                // Add event listener to new remove button
-                newRow.querySelector('.remove-group-btn').addEventListener('click', function() {
-                    container.removeChild(newRow);
-                    updateIndices(side);
-                });
-            };
+                </div>
+                {% endfor %}
+            </div>
             
-            // Update indices for form field names after removing a row
-            const updateIndices = (side) => {
+            <button type="button" class="add-group-btn" id="add-left-group">Add Neuron Group</button>
+        </div>
+        
+        <!-- Right Hemisphere Configuration -->
+        <div class="brain-hemisphere" id="right-hemisphere">
+            <div class="hemisphere-title">
+                <h2>Right Hemisphere</h2>
+                <div class="side-toggle-switch">
+                    <span>Activate</span>
+                    <label class="switch">
+                        <input type="checkbox" id="right-active" name="right_active" {% if config.right_active %}checked{% endif %}>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+            
+            <div id="right-groups-container">
+                <!-- Dynamic group rows will be added here -->
+                {% for group in config.right_groups %}
+                <div class="group-row" data-index="{{ loop.index0 }}">
+                    <table class="config-table">
+                        <tr>
+                            <th>Neuron Group</th>
+                            <th>Random %</th>
+                            <th>Actions</th>
+                        </tr>
+                        <tr>
+                            <td>
+                                <select name="right_groups[{{ loop.index0 }}][neuron_group]" class="neuron-group-select">
+                                    {% for ng in neuron_groups %}
+                                    <option value="{{ ng }}" {% if ng == group.neuron_group %}selected{% endif %}>{{ ng }}</option>
+                                    {% endfor %}
+                                </select>
+                            </td>
+                            <td>
+                                <input type="number" name="right_groups[{{ loop.index0 }}][random_percent]" value="{{ group.random_percent }}" min="1" max="100">
+                            </td>
+                            <td>
+                                <button type="button" class="remove-group-btn">Remove</button>
+                            </td>
+                        </tr>
+                    </table>
+                    <div class="config-controls">
+                        <div>
+                            <label>Poisson Rate (Hz): </label>
+                            <input type="number" name="right_groups[{{ loop.index0 }}][r_poi]" value="{{ group.r_poi }}" min="10" max="1000" step="10">
+                        </div>
+                        <div>
+                            <label>Synapse Weight (mV): </label>
+                            <input type="number" name="right_groups[{{ loop.index0 }}][w_syn]" value="{{ group.w_syn }}" min="0.1" max="10" step="0.1">
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <button type="button" class="add-group-btn" id="add-right-group">Add Neuron Group</button>
+        </div>
+    </div>
+
+    <div class="model-params">
+        <h2>Global Model Parameters</h2>
+        <div class="params-section">
+            <div class="param-group">
+                <table class="config-table">
+                    <tr>
+                        <td><label for="t_run">Trial Duration (ms):</label></td>
+                        <td><input type="number" name="t_run" id="t_run" value="{{ (model_params.t_run / ms) | int }}" min="10" max="5000" step="10"></td>
+                    </tr>
+                    <tr>
+                        <td><label for="tau">Time Constant (ms):</label></td>
+                        <td><input type="number" name="tau" id="tau" value="{{ model_params.tau / ms }}" min="1" max="100" step="1"></td>
+                    </tr>
+                </table>
+            </div>
+            <div class="param-group">
+                <table class="config-table">
+                    <tr>
+                        <td><label for="v_th">Threshold (mV):</label></td>
+                        <td><input type="number" name="v_th" id="v_th" value="{{ model_params.v_th / mV }}" min="-60" max="-30" step="1"></td>
+                    </tr>
+                    <tr>
+                        <td><label for="t_rfc">Refractory Period (ms):</label></td>
+                        <td><input type="number" name="t_rfc" id="t_rfc" value="{{ model_params.t_rfc / ms }}" min="0.1" max="10" step="0.1"></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="submit-section">
+        <input type="submit" value="Run Simulation">
+    </div>
+</form>
+
+{% if plot_filename %}
+<div class="plot-section">
+    <div class="plot">
+        <h2>Spike Raster Plot</h2>
+        <img src="/plot/{{ plot_filename }}" alt="Spike Raster" style="max-width: 100%; height: auto;">
+    </div>
+</div>
+
+<div class="activated-neurons">
+    <h2>Neuron Activation Results</h2>
+    <div class="brain-sections">
+        <div class="brain-hemisphere">
+            <h3>Left Hemisphere</h3>
+            <div class="neuron-list">
+                <h4>User Activated Neurons <span class="neuron-count">{{ left_activated_neurons|length }}</span></h4>
+                <p class="user-neuron">{{ left_activated_neurons|join(', ') or 'None' }}</p>
+                
+                <h4>Naturally Activated Neurons <span class="neuron-count">{{ left_naturally_activated_neurons|length }}</span></h4>
+                <p class="natural-neuron">{{ left_naturally_activated_neurons|join(', ') or 'None' }}</p>
+            </div>
+        </div>
+        <div class="brain-hemisphere">
+            <h3>Right Hemisphere</h3>
+            <div class="neuron-list">
+                <h4>User Activated Neurons <span class="neuron-count">{{ right_activated_neurons|length }}</span></h4>
+                <p class="user-neuron">{{ right_activated_neurons|join(', ') or 'None' }}</p>
+                
+                <h4>Naturally Activated Neurons <span class="neuron-count">{{ right_naturally_activated_neurons|length }}</span></h4>
+                <p class="natural-neuron">{{ right_naturally_activated_neurons|join(', ') or 'None' }}</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Add a legend to explain the plot markers -->
+    <div class="plot-legend" style="margin-top: 20px; background-color: #f8f8f8; padding: 15px; border-radius: 8px; border: 1px solid #ddd;">
+        <h4 style="margin-top: 0; color: #333;">Spike Plot Legend</h4>
+        <ul style="list-style-type: none; padding-left: 0; margin: 0;">
+            <li style="margin-bottom: 10px; display: flex; align-items: center;">
+                <span style="display: inline-block; width: 12px; height: 12px; background-color: #2E86AB; border-radius: 50%; margin-right: 12px; border: 1px solid white;"></span>
+                <strong>User Activated (Direct Stimulation)</strong> - Neurons directly stimulated by experimental input
+            </li>
+            <li style="margin-bottom: 10px; display: flex; align-items: center;">
+                <span style="display: inline-block; width: 12px; height: 12px; background-color: #A23B72; margin-right: 12px; border: 1px solid white;"></span>
+                <strong>Naturally Activated (Network Response)</strong> - Neurons that fired due to network connectivity
+            </li>
+        </ul>
+        <div style="margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 4px; font-size: 0.9em;">
+            <strong>Note:</strong> Blue circles show neurons you directly activated. Purple squares show neurons that fired as a result of network connections - revealing how neural activity propagates through the connectome.
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Handle activation toggles
+        const leftToggle = document.getElementById('left-active');
+        const rightToggle = document.getElementById('right-active');
+        const leftHemisphere = document.getElementById('left-hemisphere');
+        const rightHemisphere = document.getElementById('right-hemisphere');
+        
+        // Functions to add/remove neuron group configurations
+        const addGroupRow = (side, index) => {
+            const container = document.getElementById(`${side}-groups-container`);
+            const newRow = document.createElement('div');
+            newRow.className = 'group-row';
+            newRow.dataset.index = index;
+            
+            // Get neuron group options
+            const groupOptions = Array.from(document.querySelectorAll('.neuron-group-select')[0].options)
+                .map(opt => `<option value="${opt.value}">${opt.textContent}</option>`)
+                .join('');
+            
+            newRow.innerHTML = `
+                <table class="config-table">
+                    <tr>
+                        <th>Neuron Group</th>
+                        <th>Random %</th>
+                        <th>Actions</th>
+                    </tr>
+                    <tr>
+                        <td>
+                            <select name="${side}_groups[${index}][neuron_group]" class="neuron-group-select">
+                                ${groupOptions}
+                            </select>
+                        </td>
+                        <td>
+                            <input type="number" name="${side}_groups[${index}][random_percent]" value="70" min="1" max="100">
+                        </td>
+                        <td>
+                            <button type="button" class="remove-group-btn">Remove</button>
+                        </td>
+                    </tr>
+                </table>
+                <div class="config-controls">
+                    <div>
+                        <label>Poisson Rate (Hz): </label>
+                        <input type="number" name="${side}_groups[${index}][r_poi]" value="250" min="10" max="1000" step="10">
+                    </div>
+                    <div>
+                        <label>Synapse Weight (mV): </label>
+                        <input type="number" name="${side}_groups[${index}][w_syn]" value="0.8" min="0.1" max="10" step="0.1">
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(newRow);
+            
+            // Add event listener to new remove button
+            newRow.querySelector('.remove-group-btn').addEventListener('click', function() {
+                container.removeChild(newRow);
+                updateIndices(side);
+            });
+        };
+        
+        // Update indices for form field names after removing a row
+        const updateIndices = (side) => {
+            const container = document.getElementById(`${side}-groups-container`);
+            const rows = container.querySelectorAll('.group-row');
+            
+            rows.forEach((row, idx) => {
+                row.dataset.index = idx;
+                
+                // Update field names with new indices
+                const groupSelect = row.querySelector(`select[name^="${side}_groups["]`);
+                const percentInput = row.querySelector(`input[name^="${side}_groups["][name$="[random_percent]"]`);
+                const rateInput = row.querySelector(`input[name^="${side}_groups["][name$="[r_poi]"]`);
+                const weightInput = row.querySelector(`input[name^="${side}_groups["][name$="[w_syn]"]`);
+                
+                groupSelect.name = `${side}_groups[${idx}][neuron_group]`;
+                percentInput.name = `${side}_groups[${idx}][random_percent]`;
+                rateInput.name = `${side}_groups[${idx}][r_poi]`;
+                weightInput.name = `${side}_groups[${idx}][w_syn]`;
+            });
+        };
+        
+        // Add event listeners for Add Group buttons
+        document.getElementById('add-left-group').addEventListener('click', function() {
+            const container = document.getElementById('left-groups-container');
+            const nextIndex = container.querySelectorAll('.group-row').length;
+            addGroupRow('left', nextIndex);
+        });
+        
+        document.getElementById('add-right-group').addEventListener('click', function() {
+            const container = document.getElementById('right-groups-container');
+            const nextIndex = container.querySelectorAll('.group-row').length;
+            addGroupRow('right', nextIndex);
+        });
+        
+        // Add event listeners for initial Remove Group buttons
+        document.querySelectorAll('.remove-group-btn').forEach(button => {
+            button.addEventListener('click', function() {
+                const row = this.closest('.group-row');
+                const side = row.closest('.brain-hemisphere').id.split('-')[0];
                 const container = document.getElementById(`${side}-groups-container`);
-                const rows = container.querySelectorAll('.group-row');
                 
-                rows.forEach((row, idx) => {
-                    row.dataset.index = idx;
-                    
-                    // Update field names with new indices
-                    const groupSelect = row.querySelector(`select[name^="${side}_groups["]`);
-                    const percentInput = row.querySelector(`input[name^="${side}_groups["][name$="[random_percent]"]`);
-                    const rateInput = row.querySelector(`input[name^="${side}_groups["][name$="[r_poi]"]`);
-                    const weightInput = row.querySelector(`input[name^="${side}_groups["][name$="[w_syn]"]`);
-                    
-                    groupSelect.name = `${side}_groups[${idx}][neuron_group]`;
-                    percentInput.name = `${side}_groups[${idx}][random_percent]`;
-                    rateInput.name = `${side}_groups[${idx}][r_poi]`;
-                    weightInput.name = `${side}_groups[${idx}][w_syn]`;
-                });
-            };
-            
-            // Add event listeners for Add Group buttons
-            document.getElementById('add-left-group').addEventListener('click', function() {
-                const container = document.getElementById('left-groups-container');
-                const nextIndex = container.querySelectorAll('.group-row').length;
-                addGroupRow('left', nextIndex);
-            });
-            
-            document.getElementById('add-right-group').addEventListener('click', function() {
-                const container = document.getElementById('right-groups-container');
-                const nextIndex = container.querySelectorAll('.group-row').length;
-                addGroupRow('right', nextIndex);
-            });
-            
-            // Add event listeners for initial Remove Group buttons
-            document.querySelectorAll('.remove-group-btn').forEach(button => {
-                button.addEventListener('click', function() {
-                    const row = this.closest('.group-row');
-                    const side = row.closest('.brain-hemisphere').id.split('-')[0];
-                    const container = document.getElementById(`${side}-groups-container`);
-                    
-                    // Don't remove if it's the last row
-                    if (container.querySelectorAll('.group-row').length > 1) {
-                        container.removeChild(row);
-                        updateIndices(side);
-                    } else {
-                        alert('Each hemisphere must have at least one neuron group');
-                    }
-                });
-            });
-            
-            // Handle hemisphere activation toggle
-            const updateHemisphereState = (side, isActive) => {
-                const hemisphere = document.getElementById(`${side}-hemisphere`);
-                const inputs = hemisphere.querySelectorAll('input:not([type="checkbox"]), select, button');
-                
-                inputs.forEach(input => {
-                    input.disabled = !isActive;
-                });
-                
-                hemisphere.style.opacity = isActive ? '1' : '0.5';
-            };
-            
-            leftToggle.addEventListener('change', function() {
-                updateHemisphereState('left', this.checked);
-            });
-            
-            rightToggle.addEventListener('change', function() {
-                updateHemisphereState('right', this.checked);
-            });
-            
-            // Form validation before submission
-            document.getElementById('simulation-form').addEventListener('submit', function(e) {
-                // Check if at least one hemisphere is active
-                if (!leftToggle.checked && !rightToggle.checked) {
-                    e.preventDefault();
-                    alert('At least one hemisphere must be activated');
-                    return false;
+                // Don't remove if it's the last row
+                if (container.querySelectorAll('.group-row').length > 1) {
+                    container.removeChild(row);
+                    updateIndices(side);
+                } else {
+                    alert('Each hemisphere must have at least one neuron group');
                 }
-                
-                return true;
             });
         });
-    </script>
+        
+        // Handle hemisphere activation toggle
+        const updateHemisphereState = (side, isActive) => {
+            const hemisphere = document.getElementById(`${side}-hemisphere`);
+            const inputs = hemisphere.querySelectorAll('input:not([type="checkbox"]), select, button');
+            
+            inputs.forEach(input => {
+                input.disabled = !isActive;
+            });
+            
+            hemisphere.style.opacity = isActive ? '1' : '0.5';
+        };
+        
+        leftToggle.addEventListener('change', function() {
+            updateHemisphereState('left', this.checked);
+        });
+        
+        rightToggle.addEventListener('change', function() {
+            updateHemisphereState('right', this.checked);
+        });
+        
+        // Initialize hemisphere states based on current settings
+        updateHemisphereState('left', leftToggle.checked);
+        updateHemisphereState('right', rightToggle.checked);
+        
+        // Form validation before submission
+        document.getElementById('simulation-form').addEventListener('submit', function(e) {
+            // Check if at least one hemisphere is active
+            if (!leftToggle.checked && !rightToggle.checked) {
+                e.preventDefault();
+                alert('At least one hemisphere must be activated');
+                return false;
+            }
+            
+            return true;
+        });
+    });
+</script>
 </body>
 </html>

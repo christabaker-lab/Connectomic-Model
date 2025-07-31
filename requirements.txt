@@ -1,8 +1,13 @@
-flask
+fafbseg
+caveclient
+matplotlib
+seaborn
 numpy
 pandas
-matplotlib
-brian2
-networkx
 tqdm
+pyvis
+networkx
+requests
+beautifulsoup4
 scipy
+fafbseg
