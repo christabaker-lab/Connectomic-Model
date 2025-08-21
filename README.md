@@ -21,7 +21,7 @@ pip3 install -r requirements.txt
 
 ### Everything after this needs to be done every time to start the model
 
-1. Open Terminal inside the Connectomic-Model folder
+1. Open Terminal inside the Connectomic-Model folder (ignore if you are currently in the installation process)
 2. Activate the environment
 ```bash
 .\venv\Scripts\activate
