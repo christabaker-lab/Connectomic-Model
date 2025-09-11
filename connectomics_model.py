@@ -13,7 +13,7 @@ from brian2 import NeuronGroup, Synapses, PoissonInput, SpikeMonitor, StateMonit
 from brian2 import mV, ms, Hz
 
 class ConnectomicsModel:
-    def __init__(self, data_path='.'):
+    def __init__(self, data_path='data/'):
         # Load data
         try:
             self.aud_label_root_id = pd.read_csv(os.path.join(data_path, 'aud_label_root_id.csv'), index_col=0)
@@ -31,6 +31,9 @@ class ConnectomicsModel:
             
             with open(os.path.join(data_path, 'neuron_groupings.pickle'), 'rb') as fi4:
                 self.neuron_groupings = pickle.load(fi4)
+
+            self.jo_groupings = pd.read_csv('data_setup/JO_left_cluster_list_ordered_by_dendrogram_new_synapse_7-16.csv')
+
         except FileNotFoundError as e:
             print(f"Error loading data: {e}")
             # Set defaults if files are missing
@@ -303,7 +306,7 @@ class ConnectomicsModel:
     def run_model(self, activation_neuron_list=[], neuron_group_activation='JO-A', 
                   activate_both_sides=True, activation_side='L', 
                   random_selection=True, random_selection_percent=70,
-                  custom_params=None, save_data=False, config=None):
+                  custom_params=None, save_data=False, config=None, post_processing_enabled=True):
         """Run the connectomics model simulation"""
         # Update parameters with custom parameters if provided
         params = self.default_params.copy()
@@ -381,6 +384,9 @@ class ConnectomicsModel:
                 spk_mon, state_mon, user_activated_neurons, 
                 naturally_activated_neurons, params, config
             )
+        
+        if post_processing_enabled:
+            self.post_processing(save_dir)
         
         return spk_mon, state_mon, activated_neuron_labels, list(naturally_activated_neurons)
 
@@ -555,6 +561,125 @@ class ConnectomicsModel:
             ax.set_ylabel('Neuron Index')
         
         return fig
+
+    def post_processing(self, simulation_dir):
+        spike_file = os.path.join(simulation_dir, 'spikes.csv')
+        if not os.path.exists(spike_file):
+            print("Warning: Spike data not saved, run a new simulation to run the post_processing")
+            return None, None
+
+        spike_df = pd.read_csv(spike_file)
+
+        if spike_df.empty:
+            print("  [Info] 'spikes.csv' is empty. No spikes to analyze.")
+            # Create empty summary files for consistency, now with the 'side' column
+            empty_df_group = pd.DataFrame(columns=['group', 'side', 'number_of_spikes', 'first_spike_time', 'first_spike_label', 'first_spike_root_id'],)
+            
+            empty_df_group.to_csv(os.path.join(simulation_dir, 'summary_spikes_per_group.csv'), index=False)
+            print("  [Info] Created empty summary files.")
+            return empty_df_group
+
+        spike_counts_per_neuron = spike_df.groupby('neuron_index').size()
+
+        # Prepare a list to hold the data for the DataFrame
+        summary_data_list = []
+
+        for group_name, neuron_indices in self.neurons_ranges.items():
+            # Filter the spike DataFrame to get all spikes for the current group
+            group_spikes_df = spike_df[spike_df['neuron_index'].isin(neuron_indices)]
+            
+            # --- CALCULATE METRICS ---
+            if not group_spikes_df.empty:
+                first_spike_row = group_spikes_df.loc[group_spikes_df['spike_time_ms'].idxmin()]
+
+                # Extract all metrics from that row
+                this_groups_total_spikes = len(group_spikes_df)
+                first_spike_time = first_spike_row['spike_time_ms']
+                first_spike_label = first_spike_row['neuron_label']
+                first_spike_id = np.int64(first_spike_row['neuron_id'])
+            else:
+                # Handle case with no spikes
+                this_groups_total_spikes = 0
+                first_spike_time = np.nan
+                first_spike_label = None
+                first_spike_id = 0
+
+            # Determine the side from the group name
+            side = 'N/A'
+            if group_name.endswith('_L'):
+                side = 'L'
+            elif group_name.endswith('_R'):
+                side = 'R'
+            
+            # Append all metrics to the list
+            summary_data_list.append({
+                'group': group_name,
+                'side': side,
+                'number_of_spikes': this_groups_total_spikes,
+                'first_spike_time': first_spike_time,
+                'first_spike_label': first_spike_label,
+                'first_spike_root_id': first_spike_id,
+            })
+
+        spike_summary_df = pd.DataFrame(summary_data_list)
+
+        if self.jo_groupings is None or self.jo_groupings.empty:
+            print("  [Warning] 'jo_groupings' data not available. Skipping cluster analysis, proceeding with spike analysis")
+
+        spike_counts_per_id = spike_df.groupby('neuron_id').size()
+
+        grouped_clusters = self.jo_groupings.groupby('Cluster')
+
+        cluster_summary_list = []
+        
+        for cluster_name, cluster_data in grouped_clusters:
+            # Get all neuron IDs for the current cluster
+            root_ids_in_cluster = cluster_data['pre_root_id']
+            cluster_spikes_df = spike_df[spike_df['neuron_id'].isin(root_ids_in_cluster)]
+
+            if not cluster_spikes_df.empty:
+                # Find the row of the first spike
+                first_spike_row = cluster_spikes_df.loc[cluster_spikes_df['spike_time_ms'].idxmin()]
+
+
+                # Extract all metrics
+                total_cluster_spikes = len(cluster_spikes_df)
+                first_spike_time = first_spike_row['spike_time_ms']
+                first_spike_label = first_spike_row['neuron_label']
+                first_spike_id = np.int64(first_spike_row['neuron_id'])
+            else:
+                # Handle case with no spikes
+                total_cluster_spikes = 0
+                first_spike_time = np.nan
+                first_spike_label = None
+                first_spike_id = 0
+            
+            # Append all metrics to the list
+            cluster_summary_list.append({
+                'group': f'Cluster_{cluster_name}',
+                'side': 'N/A',
+                'number_of_spikes': total_cluster_spikes,
+                'first_spike_time': first_spike_time,
+                'first_spike_label': first_spike_label,
+                'first_spike_root_id': first_spike_id
+
+            })
+            
+        if cluster_summary_list:
+            cluster_summary_df = pd.DataFrame(cluster_summary_list)
+            spike_summary_df = pd.concat([spike_summary_df, cluster_summary_df], ignore_index=True)
+        
+
+
+
+        # Create the DataFrame from the list of dictionaries
+        
+        spike_summary_df.to_csv(os.path.join(simulation_dir, 'summary_spikes_per_group_and_cluster.csv'), index=False)
+
+        print(f"  [Info] Successfully created 'summary_spikes_per_group.csv' in {simulation_dir}")
+
+
+        
 
 
 # Example usage

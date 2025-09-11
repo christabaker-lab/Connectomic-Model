@@ -302,7 +302,8 @@ def run_simulation():
             activation_neuron_list=all_activated_neuron_ids,  # Use collected IDs directly
             custom_params=unified_params,
             save_data=True,  # SAVES ONE SET OF FILES
-            config=config_summary
+            config=config_summary,
+            post_processing_enabled=True
         )
         
         print(f"Simulation completed. Total spikes: {len(spk_mon.t) if spk_mon.t is not None else 0}")
