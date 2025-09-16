@@ -13,3 +13,4 @@ scipy
 fafbseg
 Flask
 brian2
+joblib

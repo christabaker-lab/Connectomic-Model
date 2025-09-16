@@ -1,0 +1,510 @@
+import os
+import json
+import pickle
+import random
+from textwrap import dedent
+from datetime import datetime
+import pandas as pd
+import numpy as np
+from joblib import Parallel, delayed, parallel_backend
+
+# Import Brian2 components
+from brian2 import (
+    NeuronGroup,
+    Synapses,
+    PoissonInput,
+    SpikeMonitor,
+    Network,
+    start_scope,
+    mV,
+    ms,
+    Hz,
+)
+
+
+def load_config(config_path):
+    """Loads the JSON configuration file."""
+    print(f"  [Info] Loading configuration from: {config_path}")
+    with open(config_path, "r") as f:
+        return json.load(f)
+
+
+def load_data(paths):
+    """Loads all necessary data files specified in the config."""
+    print("  [Info] Loading data files...")
+    try:
+        completeness_df = pd.read_csv(
+            paths["completeness_file"], index_col=0, dtype={"root_id": "str"}
+        )
+        connectivity_df = pd.read_parquet(paths["connectivity_file"])
+        jo_clusters_df = pd.read_csv(paths["jo_cluster_file"])
+
+        with open(paths["neuron_ranges_pickle"], "rb") as f:
+            neuron_ranges = pickle.load(f)
+
+        if "index" in completeness_df.columns:
+            completeness_df = completeness_df.set_index("index")
+
+        idx_to_id = completeness_df["root_id"].to_dict()
+        id_to_idx = {v: k for k, v in idx_to_id.items()}
+
+        return {
+            "completeness": completeness_df,
+            "connectivity": connectivity_df,
+            "jo_clusters": jo_clusters_df,
+            "neuron_ranges": neuron_ranges,
+            "idx_to_id": idx_to_id,
+            "id_to_idx": id_to_idx,
+        }
+    except FileNotFoundError as e:
+        print(f"  [Error] Data file not found: {e}")
+        raise
+    except Exception as e:
+        print(f"  [Error] Failed to load data: {e}")
+        raise
+
+
+def prepare_stimulation(config, data):
+    """Processes the stimulation config to get a list of neurons to activate."""
+    print("  [Info] Preparing stimulation based on config...")
+    neurons_to_activate = []
+
+    stimulation_plan = config["stimulation_config"]
+    neuron_ranges = data["neuron_ranges"]
+    id_to_idx = data["id_to_idx"]  # Get the id-to-index mapping
+
+    for side, hemisphere_config in stimulation_plan.items():
+        if not hemisphere_config["activate"]:
+            continue
+
+        side_suffix = "_L" if "left" in side else "_R"
+
+        for group_config in hemisphere_config["groups"]:
+            group_name = group_config["group_name"] + side_suffix
+
+            if group_name not in neuron_ranges:
+                print(
+                    f"  [Warning] Group '{group_name}' not found in neuron_ranges. Skipping."
+                )
+                continue
+
+            candidate_root_ids = neuron_ranges[group_name]
+            candidate_indices = []
+            for root_id in candidate_root_ids:
+                str_root_id = str(root_id)
+                if str_root_id in id_to_idx:
+                    candidate_indices.append(id_to_idx[str_root_id])
+                else:
+                    # This neuron exists in the grouping file but not the main model
+                    print(
+                        f"  [Warning] root_id {str_root_id} from group '{group_name}' not found in model. Skipping."
+                    )
+
+            if not candidate_indices:
+                continue
+
+            percent = group_config["random_selection_percent"]
+            num_to_select = int(len(candidate_indices) * (percent / 100.0))
+
+            selected_indices = random.sample(candidate_indices, num_to_select)
+
+            rate = group_config["poisson_rate_hz"] * Hz
+            for idx in selected_indices:
+                neurons_to_activate.append({"index": idx, "rate": rate})
+
+    unique_neurons = {item["index"]: item for item in neurons_to_activate}.values()
+    print(f"  [Info] Total unique neurons to be stimulated: {len(unique_neurons)}")
+    return list(unique_neurons)
+
+
+def prepare_silencing(config, data):
+    """Processes the silencing config to get a list of neuron indices to silence."""
+    print("  [Info] Preparing silencing based on config...")
+    indices_to_silence = set()
+
+    if "silencing_config" not in config:
+        return indices_to_silence
+
+    silencing_plan = config["silencing_config"]
+    neuron_ranges = data["neuron_ranges"]
+    id_to_idx = data["id_to_idx"]  # Get the id-to-index mapping
+
+    for side, hemisphere_config in silencing_plan.items():
+        if not hemisphere_config.get("activate", False):
+            continue
+
+        side_suffix = "_L" if "left" in side else "_R"
+
+        for group_config in hemisphere_config.get("groups", []):
+            group_name = group_config["group_name"] + side_suffix
+
+            if group_name not in neuron_ranges:
+                print(
+                    f"  [Warning] Silencing group '{group_name}' not found. Skipping."
+                )
+                continue
+
+            candidate_root_ids = neuron_ranges[group_name]
+            candidate_indices = []
+            for root_id in candidate_root_ids:
+                str_root_id = str(root_id)
+                if str_root_id in id_to_idx:
+                    candidate_indices.append(id_to_idx[str_root_id])
+                else:
+                    # This neuron exists in the grouping file but not the main model
+                    print(
+                        f"  [Warning] root_id {str_root_id} from silencing group '{group_name}' not found. Skipping."
+                    )
+
+            if not candidate_indices:
+                continue
+
+            percent = group_config.get("random_selection_percent", 100)
+            num_to_select = int(len(candidate_indices) * (percent / 100.0))
+
+            selected_indices = random.sample(candidate_indices, num_to_select)
+            indices_to_silence.update(selected_indices)
+
+    print(f"  [Info] Total unique neurons to be silenced: {len(indices_to_silence)}")
+    return indices_to_silence
+
+
+def run_single_trial(params, data, stimulated_neurons, silenced_indices):
+    """Builds and runs the Brian2 model for one trial."""
+    start_scope()
+    brian_params = {
+        "v_0": -52 * mV,
+        "v_rst": -52 * mV,
+        "t_mbr": 20 * ms,
+        "v_th": params["v_th_mv"] * mV,
+        "t_rfc": params["t_rfc_ms"] * ms,
+        "tau": params["tau_ms"] * ms,
+        "w_syn": params["w_syn_mv"] * mV,
+        "t_dly": 1.8 * ms,
+    }
+    model_eqs = dedent(
+        """ dv/dt = (v_0 - v + g) / t_mbr : volt (unless refractory)
+                           dg/dt = -g / tau              : volt (unless refractory)
+                           rfc                           : second """
+    )
+    neu = NeuronGroup(
+        N=len(data["completeness"]),
+        model=model_eqs,
+        method="linear",
+        threshold="v > v_th",
+        reset="v = v_rst; g = 0 * mV",
+        refractory="rfc",
+        namespace=brian_params,
+    )
+    neu.v, neu.g, neu.rfc = brian_params["v_0"], 0 * mV, brian_params["t_rfc"]
+    syn = Synapses(neu, neu, "w : volt", on_pre="g += w", delay=brian_params["t_dly"])
+    syn.connect(
+        i=data["connectivity"]["Presynaptic_Index"].values,
+        j=data["connectivity"]["Postsynaptic_Index"].values,
+    )
+    syn.w = (
+        data["connectivity"]["Connectivity x Excitatory"].values * brian_params["w_syn"]
+    )
+    if silenced_indices:
+        for neuron_idx in silenced_indices:
+            syn.w[f"i == {neuron_idx}"] = 0 * mV
+    poisson_inputs = []
+    for neuron_info in stimulated_neurons:
+        idx = neuron_info["index"]
+        p_input = PoissonInput(
+            target=neu[idx],
+            target_var="v",
+            N=1,
+            rate=neuron_info["rate"],
+            weight=brian_params["w_syn"] * params["f_poi"],
+        )
+        neu[idx].rfc = 0 * ms
+        poisson_inputs.append(p_input)
+    spk_mon = SpikeMonitor(neu)
+    net = Network(neu, syn, spk_mon, *poisson_inputs)
+    net.run(duration=params["t_run_ms"] * ms)
+    return spk_mon
+
+
+def post_process(spike_df, data, save_dir, n_trials, t_run_s):
+    """Calculates summary statistics including firing rates and saves them."""
+    print("  [Info] Performing post-processing analysis...")
+    if spike_df.empty:
+        print("  [Warning] No spikes were recorded. Creating empty summary file.")
+        pd.DataFrame(
+            columns=[
+                "group",
+                "side",
+                "avg_number_of_spikes",
+                "avg_unique_spiking_neurons",
+                "mean_spike_rate_hz",
+                "std_spike_rate_hz",
+                "first_spike_time_ms",
+                "first_spike_neuron_label",
+                "first_spike_neuron_id",
+            ]
+        ).to_csv(os.path.join(save_dir, "summary_analysis.csv"), index=False)
+        return
+
+    summary_list = []
+    analysis_groups = {}
+
+    for group_name, root_ids in data["neuron_ranges"].items():
+        indices = [
+            data["id_to_idx"][str(rid)]
+            for rid in root_ids
+            if str(rid) in data["id_to_idx"]
+        ]
+        if indices:
+            analysis_groups[group_name] = {"indices": indices, "type": "group"}
+
+    for cluster_id, cluster_group in data["jo_clusters"].groupby("Cluster"):
+        root_ids = cluster_group["pre_root_id"].unique()
+        indices = [
+            data["id_to_idx"][str(rid)]
+            for rid in root_ids
+            if str(rid) in data["id_to_idx"]
+        ]
+        if indices:
+            analysis_groups[f"Cluster_{cluster_id}"] = {
+                "indices": indices,
+                "type": "cluster",
+            }
+
+    for group_name, group_info in analysis_groups.items():
+        indices = group_info["indices"]
+        group_spikes = spike_df[spike_df["neuron_index"].isin(indices)]
+
+        # Calculate spikes per trial, reindex to include trials with 0 spikes, then get the average
+        spikes_per_trial = (
+            group_spikes.groupby("trial").size().reindex(range(n_trials), fill_value=0)
+        )
+        avg_spikes = spikes_per_trial.mean()
+
+        # Calculate unique spiking neurons per trial, reindex, then get the average
+        unique_spikers_per_trial = (
+            group_spikes.groupby("trial")["neuron_index"]
+            .nunique()
+            .reindex(range(n_trials), fill_value=0)
+        )
+        avg_unique_spikers = unique_spikers_per_trial.mean()
+
+        # This rate calculation is already an average of per-trial rates, so it's correct
+        rates_per_trial = spikes_per_trial / t_run_s
+        mean_rate, std_rate = rates_per_trial.mean(), rates_per_trial.std()
+
+        if not group_spikes.empty:
+            first_spike = group_spikes.loc[group_spikes["spike_time_ms"].idxmin()]
+            first_spike_time = first_spike["spike_time_ms"]
+            first_spike_label = first_spike["neuron_label"]
+            first_spike_id = np.int64(first_spike["neuron_id"])
+        else:
+            first_spike_time, first_spike_label, first_spike_id = np.nan, None, None
+
+        side = "N/A"
+        if group_info["type"] == "group":
+            if group_name.endswith("_L"):
+                side = "L"
+            elif group_name.endswith("_R"):
+                side = "R"
+
+        summary_list.append(
+            {
+                "group": group_name,
+                "side": side,
+                "avg_number_of_spikes": avg_spikes,
+                "avg_unique_spiking_neurons": avg_unique_spikers,
+                "mean_spike_rate_hz": mean_rate,
+                "std_spike_rate_hz": std_rate,
+                "first_spike_time_ms": first_spike_time,
+                "first_spike_neuron_label": first_spike_label,
+                "first_spike_neuron_id": first_spike_id,
+            }
+        )
+
+    summary_df = pd.DataFrame(summary_list)
+
+    print("  [Info] Finding top 20 most active ungrouped neurons...")
+
+    # Section to get unassigned top 20 most active neurons
+    # Get a set of all neuron indices that are already in a group
+    all_grouped_indices = set()
+    for group_info in analysis_groups.values():
+        all_grouped_indices.update(group_info["indices"])
+
+    # Filter for spikes from ungrouped neurons
+    ungrouped_spikes_df = spike_df[~spike_df["neuron_index"].isin(all_grouped_indices)]
+
+    if not ungrouped_spikes_df.empty:
+        # 3. Calculate average firing rate for each ungrouped neuron
+        total_spikes_per_neuron = ungrouped_spikes_df.groupby("neuron_index").size()
+        avg_rate_per_neuron = total_spikes_per_neuron / (n_trials * t_run_s)
+
+        # 4. Get the top 20
+        top_20_ungrouped_neurons = avg_rate_per_neuron.sort_values(
+            ascending=False
+        ).head(20)
+
+        top_20_list = []
+        for neuron_index, mean_rate in top_20_ungrouped_neurons.items():
+            neuron_spikes = ungrouped_spikes_df[
+                ungrouped_spikes_df["neuron_index"] == neuron_index
+            ]
+
+            # Calculate stats for this individual neuron
+            spikes_per_trial = (
+                neuron_spikes.groupby("trial")
+                .size()
+                .reindex(range(n_trials), fill_value=0)
+            )
+            rates_per_trial = spikes_per_trial / t_run_s
+            std_rate = rates_per_trial.std()
+            avg_spikes = spikes_per_trial.mean()
+
+            first_spike = neuron_spikes.loc[neuron_spikes["spike_time_ms"].idxmin()]
+
+            # Format for the summary file
+            neuron_label = first_spike["neuron_label"]
+            side = "N/A"
+            if isinstance(neuron_label, str) and neuron_label.endswith(("_L", "_R")):
+                side = neuron_label[-1]
+
+            top_20_list.append(
+                {
+                    "group": f"INDIVIDUAL: {neuron_label}",
+                    "side": side,
+                    "avg_number_of_spikes": avg_spikes,
+                    "avg_unique_spiking_neurons": 1.0,
+                    "mean_spike_rate_hz": mean_rate,
+                    "std_spike_rate_hz": std_rate,
+                    "first_spike_time_ms": first_spike["spike_time_ms"],
+                    "first_spike_neuron_label": neuron_label,
+                    "first_spike_neuron_id": np.int64(first_spike["neuron_id"]),
+                }
+            )
+
+        if top_20_list:
+            top_20_df = pd.DataFrame(top_20_list)
+            # Add a separator row for clarity in the CSV
+            separator = pd.DataFrame([{"group": "--- TOP 20 INDIVIDUAL NEURONS ---"}])
+            summary_df = pd.concat(
+                [summary_df, separator, top_20_df], ignore_index=True
+            )
+
+    if not summary_df.empty:
+        summary_df["first_spike_neuron_id"] = (
+            summary_df["first_spike_neuron_id"].fillna(0).astype(np.int64)
+        )
+
+    summary_df.to_csv(
+        os.path.join(save_dir, "summary_analysis.csv"), index=False, float_format="%.0f"
+    )
+    print("  [Info] Post-processing complete. Summary file saved.")
+
+
+def run_experiment(config_path):
+    """Orchestrates the entire multi-trial experiment from a config file."""
+    config = load_config(config_path)
+    data = load_data(config["file_paths"])
+
+    params = config["simulation_parameters"]
+    n_trials = params.get("n_trials", 1)
+    n_cores = params.get("n_cores", -1)
+
+    print(
+        f"\n  [Info] Starting experiment with {n_trials} trials on {n_cores if n_cores > 0 else 'all available'} cores..."
+    )
+    with parallel_backend("loky", n_jobs=n_cores):
+        trial_results = Parallel()(
+            delayed(run_trial_wrapper)(i, config, data, params) for i in range(n_trials)
+        )
+    print("  [Info] All trials complete.")
+
+    print("  [Info] Aggregating and saving results...")
+    all_spikes = []
+
+    for i, result_dict in enumerate(trial_results):
+        df_trial = pd.DataFrame(
+            {
+                "neuron_index": result_dict["spike_indices"],
+                "spike_time_ms": result_dict["spike_times_ms"],
+            }
+        )
+        df_trial["trial"] = i
+
+        stimulated_in_trial = result_dict["stimulated_neurons"]
+        user_indices_for_this_trial = {n["index"] for n in stimulated_in_trial}
+
+        df_trial["activation_type"] = np.where(
+            df_trial["neuron_index"].isin(user_indices_for_this_trial),
+            "user",
+            "natural",
+        )
+        all_spikes.append(df_trial)
+
+    if not all_spikes:
+        spike_df = pd.DataFrame()
+    else:
+        spike_df = pd.concat(all_spikes, ignore_index=True)
+        spike_df["neuron_id"] = spike_df["neuron_index"].map(data["idx_to_id"])
+
+        id_to_label_map = data["completeness"].set_index("root_id")["label"]
+        spike_df["neuron_label"] = spike_df["neuron_id"].map(id_to_label_map)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = os.path.join(
+        config["output_config"]["base_output_directory"],
+        config["output_config"]["output_directory_name"],
+    )
+    save_dir = save_dir + "--" + timestamp
+    os.makedirs(save_dir, exist_ok=True)
+    with open(os.path.join(save_dir, "config.json"), "w") as f:
+        json.dump(config, f, indent=2)
+
+    if not spike_df.empty:
+        spike_df["neuron_id"] = spike_df["neuron_id"].fillna(0).astype(np.int64)
+
+    spike_df.to_parquet(
+        os.path.join(save_dir, "spikes.parquet"), compression="gzip", engine="pyarrow"
+    )
+    print(f"  [Info] Aggregated spike data saved to: {save_dir}")
+
+    t_run_s = params["t_run_ms"] / 1000.0
+    post_process(spike_df, data, save_dir, n_trials, t_run_s)
+
+
+def run_trial_wrapper(trial_num, config, data, params):
+    """A helper function that prepares and runs a single trial."""
+    print(f"    - Starting trial {trial_num + 1}...")
+    stimulated_neurons_trial = prepare_stimulation(config, data)
+    silenced_indices_trial = prepare_silencing(config, data)
+    spk_mon = run_single_trial(
+        params, data, stimulated_neurons_trial, silenced_indices_trial
+    )
+
+    # Extract raw data and return a simple dictionary instead of the Brian2 object
+    return {
+        "spike_indices": np.array(spk_mon.i),
+        "spike_times_ms": np.array(spk_mon.t / ms),
+        "stimulated_neurons": stimulated_neurons_trial,
+    }
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) != 2:
+        print("Usage: python hpc_runner.py <path_to_config.json>")
+        sys.exit(1)
+
+    config_file_path = sys.argv[1]
+
+    print("=" * 50)
+    print("Starting Connectomics Experiment")
+    print("=" * 50)
+
+    run_experiment(config_file_path)
+
+    print("\n" + "=" * 50)
+    print("Experiment Finished.")
+    print("=" * 50)

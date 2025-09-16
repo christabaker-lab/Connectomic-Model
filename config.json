@@ -1,0 +1,64 @@
+{
+  "output_config": {
+    "base_output_directory": "simulation_results",
+    "output_directory_name": "JOA-L50R50-100runs"
+  },
+  "simulation_parameters": {
+    "n_cores": -1,
+    "n_trials": 10,
+    "t_run_ms": 1000,
+    "v_th_mv": -45.0,
+    "t_rfc_ms": 2.2,
+    "tau_ms": 5.0,
+    "w_syn_mv": 0.8,
+    "f_poi": 150
+  },
+  "file_paths": {
+    "completeness_file": "data/CB_completeness.csv",
+    "connectivity_file": "data/CB_connectivity.parquet",
+    "neuron_ranges_pickle": "data/neuron_ranges.pkl",
+    "jo_cluster_file": "data/JO_left_cluster_list_ordered_by_dendrogram_new_synapse_7-16.csv"
+  },
+  "stimulation_config": {
+    "left_hemisphere": {
+      "activate": true,
+      "groups": [
+        {
+          "group_name": "JO-A",
+          "random_selection_percent": 50,
+          "poisson_rate_hz": 250
+        },
+        {
+          "group_name": "JO-B",
+          "random_selection_percent": 50,
+          "poisson_rate_hz": 250
+        }
+      ]
+    },
+    "right_hemisphere": {
+      "activate": true,
+      "groups": [
+        {
+          "group_name": "JO-A",
+          "random_selection_percent": 50,
+          "poisson_rate_hz": 250
+        },
+        {
+          "group_name": "JO-B",
+          "random_selection_percent": 50,
+          "poisson_rate_hz": 250
+        }
+      ]
+    }
+  },
+  "silencing_config": {
+      "left_hemisphere": {
+        "activate": true,
+        "groups": []
+      },
+      "right_hemisphere": {
+        "activate": false,
+        "groups": []
+      }
+  }
+}
