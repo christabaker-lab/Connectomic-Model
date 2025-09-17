@@ -77,18 +77,23 @@ def prepare_stimulation(config, data):
         if not hemisphere_config["activate"]:
             continue
 
-        side_suffix = "_L" if "left" in side else "_R"
-
         for group_config in hemisphere_config["groups"]:
-            group_name = group_config["group_name"] + side_suffix
+            base_group_name = group_config['group_name']
 
-            if group_name not in neuron_ranges:
-                print(
-                    f"  [Warning] Group '{group_name}' not found in neuron_ranges. Skipping."
-                )
-                continue
+            if base_group_name.lower().startswith('cluster'):
+                group_name_to_lookup = base_group_name
+            else:
+                # Otherwise, it's an anatomical group, so add the side suffix
+                side_suffix = '_L' if 'left' in side else '_R'
+                group_name_to_lookup = base_group_name + side_suffix
 
-            candidate_root_ids = neuron_ranges[group_name]
+                if group_name_to_lookup not in neuron_ranges:
+                    print(
+                        f"  [Warning] Group '{group_name_to_lookup}' not found in neuron_ranges. Skipping."
+                    )
+                    continue
+
+            candidate_root_ids = neuron_ranges[group_name_to_lookup]
             candidate_indices = []
             for root_id in candidate_root_ids:
                 str_root_id = str(root_id)
@@ -97,7 +102,7 @@ def prepare_stimulation(config, data):
                 else:
                     # This neuron exists in the grouping file but not the main model
                     print(
-                        f"  [Warning] root_id {str_root_id} from group '{group_name}' not found in model. Skipping."
+                        f"  [Warning] root_id {str_root_id} from group '{group_name_to_lookup}' not found in model. Skipping."
                     )
 
             if not candidate_indices:
@@ -133,18 +138,23 @@ def prepare_silencing(config, data):
         if not hemisphere_config.get("activate", False):
             continue
 
-        side_suffix = "_L" if "left" in side else "_R"
-
         for group_config in hemisphere_config.get("groups", []):
-            group_name = group_config["group_name"] + side_suffix
+            base_group_name = group_config['group_name']
 
-            if group_name not in neuron_ranges:
-                print(
-                    f"  [Warning] Silencing group '{group_name}' not found. Skipping."
-                )
-                continue
+            # <<< FIX IS HERE: Differentiate between group types >>>
+            if base_group_name.lower().startswith('cluster'):
+                group_name_to_lookup = base_group_name
+            else:
+                side_suffix = '_L' if 'left' in side else '_R'
+                group_name_to_lookup = base_group_name + side_suffix
 
-            candidate_root_ids = neuron_ranges[group_name]
+                if group_name_to_lookup not in neuron_ranges:
+                    print(
+                        f"  [Warning] Silencing group '{group_name_to_lookup}' not found. Skipping."
+                    )
+                    continue
+
+            candidate_root_ids = neuron_ranges[group_name_to_lookup]
             candidate_indices = []
             for root_id in candidate_root_ids:
                 str_root_id = str(root_id)
@@ -153,7 +163,7 @@ def prepare_silencing(config, data):
                 else:
                     # This neuron exists in the grouping file but not the main model
                     print(
-                        f"  [Warning] root_id {str_root_id} from silencing group '{group_name}' not found. Skipping."
+                        f"  [Warning] root_id {str_root_id} from silencing group '{group_name_to_lookup}' not found. Skipping."
                     )
 
             if not candidate_indices:
@@ -258,18 +268,18 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         if indices:
             analysis_groups[group_name] = {"indices": indices, "type": "group"}
 
-    for cluster_id, cluster_group in data["jo_clusters"].groupby("Cluster"):
-        root_ids = cluster_group["pre_root_id"].unique()
-        indices = [
-            data["id_to_idx"][str(rid)]
-            for rid in root_ids
-            if str(rid) in data["id_to_idx"]
-        ]
-        if indices:
-            analysis_groups[f"Cluster_{cluster_id}"] = {
-                "indices": indices,
-                "type": "cluster",
-            }
+    # for cluster_id, cluster_group in data["jo_clusters"].groupby("Cluster"):
+    #     root_ids = cluster_group["pre_root_id"].unique()
+    #     indices = [
+    #         data["id_to_idx"][str(rid)]
+    #         for rid in root_ids
+    #         if str(rid) in data["id_to_idx"]
+    #     ]
+    #     if indices:
+    #         analysis_groups[f"Cluster_{cluster_id}"] = {
+    #             "indices": indices,
+    #             "type": "cluster",
+    #         }
 
     for group_name, group_info in analysis_groups.items():
         indices = group_info["indices"]
@@ -494,7 +504,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) != 2:
-        print("Usage: python hpc_runner.py <path_to_config.json>")
+        print("Usage: python new_model.py <path_to_config.json>")
         sys.exit(1)
 
     config_file_path = sys.argv[1]
