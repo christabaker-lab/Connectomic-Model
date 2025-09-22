@@ -68,51 +68,40 @@ def prepare_stimulation(config, data):
     """Processes the stimulation config to get a list of neurons to activate."""
     print("  [Info] Preparing stimulation based on config...")
     neurons_to_activate = []
-
+    
     stimulation_plan = config["stimulation_config"]
     neuron_ranges = data["neuron_ranges"]
-    id_to_idx = data["id_to_idx"]  # Get the id-to-index mapping
+    id_to_idx = data["id_to_idx"]
 
     for side, hemisphere_config in stimulation_plan.items():
         if not hemisphere_config["activate"]:
             continue
-
+            
         for group_config in hemisphere_config["groups"]:
             base_group_name = group_config['group_name']
 
             if base_group_name.lower().startswith('cluster'):
                 group_name_to_lookup = base_group_name
             else:
-                # Otherwise, it's an anatomical group, so add the side suffix
                 side_suffix = '_L' if 'left' in side else '_R'
                 group_name_to_lookup = base_group_name + side_suffix
-
-                if group_name_to_lookup not in neuron_ranges:
-                    print(
-                        f"  [Warning] Group '{group_name_to_lookup}' not found in neuron_ranges. Skipping."
-                    )
-                    continue
+            
+            if group_name_to_lookup not in neuron_ranges:
+                print(f"  [Warning] Group '{group_name_to_lookup}' not found in neuron_ranges. Skipping.")
+                continue
 
             candidate_root_ids = neuron_ranges[group_name_to_lookup]
-            candidate_indices = []
-            for root_id in candidate_root_ids:
-                str_root_id = str(root_id)
-                if str_root_id in id_to_idx:
-                    candidate_indices.append(id_to_idx[str_root_id])
-                else:
-                    # This neuron exists in the grouping file but not the main model
-                    print(
-                        f"  [Warning] root_id {str_root_id} from group '{group_name_to_lookup}' not found in model. Skipping."
-                    )
+            candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
 
             if not candidate_indices:
                 continue
 
             percent = group_config["random_selection_percent"]
             num_to_select = int(len(candidate_indices) * (percent / 100.0))
-
+            if num_to_select == 0 and len(candidate_indices) > 0: num_to_select = 1
+            
             selected_indices = random.sample(candidate_indices, num_to_select)
-
+            
             rate = group_config["poisson_rate_hz"] * Hz
             for idx in selected_indices:
                 neurons_to_activate.append({"index": idx, "rate": rate})
@@ -126,52 +115,41 @@ def prepare_silencing(config, data):
     """Processes the silencing config to get a list of neuron indices to silence."""
     print("  [Info] Preparing silencing based on config...")
     indices_to_silence = set()
-
+    
     if "silencing_config" not in config:
         return indices_to_silence
-
+        
     silencing_plan = config["silencing_config"]
     neuron_ranges = data["neuron_ranges"]
-    id_to_idx = data["id_to_idx"]  # Get the id-to-index mapping
+    id_to_idx = data["id_to_idx"]
 
     for side, hemisphere_config in silencing_plan.items():
         if not hemisphere_config.get("activate", False):
             continue
-
+            
         for group_config in hemisphere_config.get("groups", []):
             base_group_name = group_config['group_name']
 
-            # <<< FIX IS HERE: Differentiate between group types >>>
             if base_group_name.lower().startswith('cluster'):
                 group_name_to_lookup = base_group_name
             else:
                 side_suffix = '_L' if 'left' in side else '_R'
                 group_name_to_lookup = base_group_name + side_suffix
-
-                if group_name_to_lookup not in neuron_ranges:
-                    print(
-                        f"  [Warning] Silencing group '{group_name_to_lookup}' not found. Skipping."
-                    )
-                    continue
+            
+            if group_name_to_lookup not in neuron_ranges:
+                print(f"  [Warning] Silencing group '{group_name_to_lookup}' not found. Skipping.")
+                continue
 
             candidate_root_ids = neuron_ranges[group_name_to_lookup]
-            candidate_indices = []
-            for root_id in candidate_root_ids:
-                str_root_id = str(root_id)
-                if str_root_id in id_to_idx:
-                    candidate_indices.append(id_to_idx[str_root_id])
-                else:
-                    # This neuron exists in the grouping file but not the main model
-                    print(
-                        f"  [Warning] root_id {str_root_id} from silencing group '{group_name_to_lookup}' not found. Skipping."
-                    )
+            candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
 
             if not candidate_indices:
                 continue
 
             percent = group_config.get("random_selection_percent", 100)
             num_to_select = int(len(candidate_indices) * (percent / 100.0))
-
+            if num_to_select == 0 and len(candidate_indices) > 0: num_to_select = 1
+            
             selected_indices = random.sample(candidate_indices, num_to_select)
             indices_to_silence.update(selected_indices)
 
@@ -303,6 +281,14 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         rates_per_trial = spikes_per_trial / t_run_s
         mean_rate, std_rate = rates_per_trial.mean(), rates_per_trial.std()
 
+        if not group_spikes.empty and avg_spikes == 0:
+            print("\n" + "="*20 + " DEBUGGING " + "="*20)
+            print(f"Found group with spikes but zero stats: {group_name}")
+            print(f"Total spikes found for this group: {len(group_spikes)}")
+            print("Spikes per trial calculation:")
+            print(spikes_per_trial)
+            print("="*51 + "\n")
+
         if not group_spikes.empty:
             first_spike = group_spikes.loc[group_spikes["spike_time_ms"].idxmin()]
             first_spike_time = first_spike["spike_time_ms"]
@@ -406,8 +392,11 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
             summary_df["first_spike_neuron_id"].fillna(0).astype(np.int64)
         )
 
+        # Round up the average spikes column to the next whole number
+        summary_df['avg_number_of_spikes'] = np.ceil(summary_df['avg_number_of_spikes'])
+
     summary_df.to_csv(
-        os.path.join(save_dir, "summary_analysis.csv"), index=False, float_format="%.0f"
+        os.path.join(save_dir, "summary_analysis.csv"), index=False
     )
     print("  [Info] Post-processing complete. Summary file saved.")
 
