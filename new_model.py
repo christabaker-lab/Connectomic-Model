@@ -19,6 +19,9 @@ from brian2 import (
     mV,
     ms,
     Hz,
+    pF,
+    Mohm,
+    pA
 )
 
 
@@ -157,62 +160,121 @@ def prepare_silencing(config, data):
     return indices_to_silence
 
 
-def run_single_trial(params, data, stimulated_neurons, silenced_indices):
-    """Builds and runs the Brian2 model for one trial."""
+def run_single_trial(params, data, stimulated_neurons, silenced_indices, config):
+    """Builds and runs the Brian2 model for one trial with advanced features."""
     start_scope()
+    
+    # Get feature configurations
+    syn_config = config.get("synapse_config", {})
+    stp_config = config.get("stp_config", {})
+    delay_config = config.get("delay_config", {})
+
+    # Neuron Model Setup
+    C_mem = 200 * pF
+    R_mem = 100 * Mohm
     brian_params = {
-        "v_0": -52 * mV,
-        "v_rst": -52 * mV,
-        "t_mbr": 20 * ms,
-        "v_th": params["v_th_mv"] * mV,
+        "v_0": -52 * mV, 
+        "v_rst": -52 * mV, 
+        "t_mbr": R_mem * C_mem,
+        "v_th": params["v_th_mv"] * mV, 
         "t_rfc": params["t_rfc_ms"] * ms,
-        "tau": params["tau_ms"] * ms,
-        "w_syn": params["w_syn_mv"] * mV,
-        "t_dly": 1.8 * ms,
+        "tau": params["tau_ms"] * ms, 
+        "R_mem": R_mem
     }
     model_eqs = dedent(
-        """ dv/dt = (v_0 - v + g) / t_mbr : volt (unless refractory)
-                           dg/dt = -g / tau              : volt (unless refractory)
-                           rfc                           : second """
+        """
+        dv/dt = ((v_0 - v) + R_mem * I_syn) / t_mbr : volt (unless refractory)
+        dI_syn/dt = -I_syn / tau : amp (unless refractory)
+        rfc : second
+        """
     )
     neu = NeuronGroup(
-        N=len(data["completeness"]),
-        model=model_eqs,
+        N=len(data["completeness"]), 
+        model=model_eqs, 
         method="linear",
-        threshold="v > v_th",
-        reset="v = v_rst; g = 0 * mV",
+        threshold="v > v_th", 
+        reset="v = v_rst", 
         refractory="rfc",
-        namespace=brian_params,
+        namespace=brian_params
     )
-    neu.v, neu.g, neu.rfc = brian_params["v_0"], 0 * mV, brian_params["t_rfc"]
-    syn = Synapses(neu, neu, "w : volt", on_pre="g += w", delay=brian_params["t_dly"])
+    neu.v, neu.I_syn, neu.rfc = brian_params["v_0"], 0 * pA, brian_params["t_rfc"]
+
+    # --- Synapse Setup ---
+    
+    # STEP A: Create the Synapses object
+    if stp_config.get("enabled", False):
+        U = stp_config.get("U", 0.5)
+        tau_rec = stp_config.get("tau_rec_ms", 800) * ms
+        tau_facil = stp_config.get("tau_facil_ms", 0) * ms
+        
+        syn_model = """
+        w : amp
+        dx/dt = (1-x)/tau_rec : 1 (event-driven)
+        du/dt = (U-u)/tau_facil : 1 (event-driven)
+        """
+        on_pre_action = """
+        I_syn_post += w * u * x
+        x -= u * x
+        u += U * (1-u)
+        """
+
+        syn = Synapses(neu, neu, model=syn_model, on_pre=on_pre_action)
+    else:
+        syn = Synapses(neu, neu, "w : amp", on_pre="I_syn_post += w")
+
+    # STEP B: Connect the synapses
     syn.connect(
         i=data["connectivity"]["Presynaptic_Index"].values,
         j=data["connectivity"]["Postsynaptic_Index"].values,
     )
-    syn.w = (
-        data["connectivity"]["Connectivity x Excitatory"].values * brian_params["w_syn"]
-    )
+
+    # STEP C: Set initial state variables for STP synapses AFTER connecting
+    if stp_config.get("enabled", False):
+        syn.x = 1.0
+        syn.u = stp_config.get("U", 0.5)
+
+    # STEP D: Set delays AFTER connecting
+    if delay_config.get("enabled", False):
+        min_d = delay_config.get("min_delay_ms", 1.0) * ms
+        max_d = delay_config.get("max_delay_ms", 5.0) * ms
+        syn.delay = min_d + np.random.rand(len(syn)) * (max_d - min_d)
+    else:
+        syn.delay = 1.8 * ms 
+
+    # STEP E: Normalize and set weights
+    base_weights = data["connectivity"]["Connectivity x Excitatory"].values
+    norm_type = syn_config.get("normalization", "linear")
+    
+    if norm_type.lower() == "sqrt":
+        normalized_weights = np.sqrt(np.abs(base_weights)) * np.sign(base_weights)
+    elif norm_type.lower() == "log":
+        normalized_weights = np.log1p(np.abs(base_weights)) * np.sign(base_weights)
+    else:
+        normalized_weights = base_weights
+
+    current_scale = syn_config.get("current_scale_pa", 50.0) * pA
+    syn.w = normalized_weights * current_scale
+
+    # Silencing and stimulation setup
     if silenced_indices:
         for neuron_idx in silenced_indices:
-            syn.w[f"i == {neuron_idx}"] = 0 * mV
+            syn.w[f"i == {neuron_idx}"] = 0 * pA
+
     poisson_inputs = []
+    f_poi_current = params.get("w_syn_mv") * params.get("f_poi") * 10 * pA
     for neuron_info in stimulated_neurons:
         idx = neuron_info["index"]
         p_input = PoissonInput(
-            target=neu[idx],
-            target_var="v",
-            N=1,
-            rate=neuron_info["rate"],
-            weight=brian_params["w_syn"] * params["f_poi"],
+            target=neu[idx], target_var="I_syn", N=1,
+            rate=neuron_info["rate"], weight=f_poi_current,
         )
         neu[idx].rfc = 0 * ms
         poisson_inputs.append(p_input)
+    
     spk_mon = SpikeMonitor(neu)
     net = Network(neu, syn, spk_mon, *poisson_inputs)
     net.run(duration=params["t_run_ms"] * ms)
     return spk_mon
-
 
 def post_process(spike_df, data, save_dir, n_trials, t_run_s):
     """Calculates summary statistics including firing rates and saves them."""
@@ -478,7 +540,7 @@ def run_trial_wrapper(trial_num, config, data, params):
     stimulated_neurons_trial = prepare_stimulation(config, data)
     silenced_indices_trial = prepare_silencing(config, data)
     spk_mon = run_single_trial(
-        params, data, stimulated_neurons_trial, silenced_indices_trial
+        params, data, stimulated_neurons_trial, silenced_indices_trial, config
     )
 
     # Extract raw data and return a simple dictionary instead of the Brian2 object

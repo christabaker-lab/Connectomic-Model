@@ -1,7 +1,7 @@
 {
   "output_config": {
     "base_output_directory": "simulation_results",
-    "output_directory_name": "JOA-L50R50-100runs"
+    "output_directory_name": "New_Run_test-1"
   },
   "simulation_parameters": {
     "n_cores": -1,
@@ -12,6 +12,21 @@
     "tau_ms": 5.0,
     "w_syn_mv": 0.8,
     "f_poi": 150
+  },
+  "synapse_config": {
+    "normalization": "log",
+    "current_scale_pa": 50.0
+  },
+  "stp_config": {
+    "enabled": true,
+    "U": 0.5,
+    "tau_rec_ms": 800,
+    "tau_facil_ms": 100
+  },
+  "delay_config": {
+    "enabled": true,
+    "min_delay_ms": 1.5,
+    "max_delay_ms": 5.0
   },
   "file_paths": {
     "completeness_file": "data/CB_completeness.csv",
