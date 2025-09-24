@@ -241,6 +241,8 @@ def run_single_trial(params, data, stimulated_neurons, silenced_indices, config)
     else:
         syn.delay = 1.8 * ms 
 
+    print(f"  [Info] Synaptic Delay set to: {syn.delay}")
+
     # STEP E: Normalize and set weights
     base_weights = data["connectivity"]["Connectivity x Excitatory"].values
     norm_type = syn_config.get("normalization", "linear")
@@ -276,6 +278,7 @@ def run_single_trial(params, data, stimulated_neurons, silenced_indices, config)
     net.run(duration=params["t_run_ms"] * ms)
     return spk_mon
 
+
 def post_process(spike_df, data, save_dir, n_trials, t_run_s):
     """Calculates summary statistics including firing rates and saves them."""
     print("  [Info] Performing post-processing analysis...")
@@ -307,19 +310,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         ]
         if indices:
             analysis_groups[group_name] = {"indices": indices, "type": "group"}
-
-    # for cluster_id, cluster_group in data["jo_clusters"].groupby("Cluster"):
-    #     root_ids = cluster_group["pre_root_id"].unique()
-    #     indices = [
-    #         data["id_to_idx"][str(rid)]
-    #         for rid in root_ids
-    #         if str(rid) in data["id_to_idx"]
-    #     ]
-    #     if indices:
-    #         analysis_groups[f"Cluster_{cluster_id}"] = {
-    #             "indices": indices,
-    #             "type": "cluster",
-    #         }
 
     for group_name, group_info in analysis_groups.items():
         indices = group_info["indices"]
