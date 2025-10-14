@@ -2,6 +2,7 @@
 #BSUB -n 256
 #BSUB -W 20
 #BSUB -R span[hosts=1]
+#BSUB -R "rusage[mem=16gb]"
 #BSUB -J connectomic-model-simulation
 #BSUB -o stdout.%J
 #BSUB -e stderr.%J
