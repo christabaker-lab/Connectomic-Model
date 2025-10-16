@@ -449,15 +449,15 @@ def create_aggregate_vectors(adj_matrix, update=False):
 
 
 def final_run():
-    updated_aud_id_table = get_lab_aud_neurons(update=False)
-    updated_dn_id_table = update_dn_neurons(update=False)
+    updated_aud_id_table = get_lab_aud_neurons(update=True)
+    updated_dn_id_table = update_dn_neurons(update=True)
     aud_ids, dn_ids, str_aud_ids, str_dn_ids = get_aud_dn_ids(updated_aud_id_table, updated_dn_id_table)
     print('Updating Adjacency')
-    adj_matrix, filtered_aud_ids, filtered_dn_ids = update_adjacency_id_based(aud_ids, dn_ids, update=False)
+    adj_matrix, filtered_aud_ids, filtered_dn_ids = update_adjacency_id_based(aud_ids, dn_ids, update=True)
     # get_desc_connectivity(dn_ids)
 
     print("Creating Normalized matrix")
-    normalized_matrix = create_normalized_adj_matrix(adj_matrix, filtered_aud_ids, filtered_dn_ids, update=False)
+    normalized_matrix = create_normalized_adj_matrix(adj_matrix, filtered_aud_ids, filtered_dn_ids, update=True)
     norm_idx, norm_cols = normalized_matrix.index, normalized_matrix.columns
     adj_idx, adj_cols = adj_matrix.index, adj_matrix.columns
     dn_name_list, aud_name_list = [], []

@@ -7,6 +7,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed, parallel_backend
+import matplotlib.pyplot as plt
 
 # Import Brian2 components
 from brian2 import (
@@ -401,6 +402,99 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
     print("  [Info] Post-processing complete. Summary file saved.")
 
 
+def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
+    """
+    Creates a raster plot for user-selected neuron groups, remapping the Y-axis
+    to group neurons together visually and ensure labels are aligned.
+    """
+    groups_to_plot = plot_config.get("groups_to_plot", [])
+    if not plot_config.get("enabled", False) or not groups_to_plot:
+        print("  [Info] Raster plot disabled or no groups specified in config. Skipping.")
+        return
+
+    print(f"  [Info] Remapping Y-axis and creating raster plot for groups: {', '.join(groups_to_plot)}...")
+
+    trial_spikes = spike_df[spike_df['trial'] == trial_to_plot].copy()
+    if trial_spikes.empty:
+        print(f"  [Warning] No spikes in trial {trial_to_plot}. Skipping raster plot.")
+        return
+
+    # --- Remapping Logic ---
+    y_cursor = 0
+    y_tick_locations, y_tick_labels = [], []
+    index_to_plot_y_map = {}
+    
+    # Define a visual gap between groups
+    gap_between_groups = 10 
+
+    for group_name in groups_to_plot:
+        if group_name not in data["neuron_ranges"]:
+            print(f"  [Warning] Group '{group_name}' not found in data. Skipping this group.")
+            continue
+        
+        root_ids = data["neuron_ranges"][group_name]
+        group_indices = sorted([data["id_to_idx"][str(rid)] for rid in root_ids if str(rid) in data["id_to_idx"]])
+        
+        if not group_indices:
+            continue
+            
+        # Map each original index to its new Y position in the contiguous block
+        for i, original_index in enumerate(group_indices):
+            index_to_plot_y_map[original_index] = y_cursor + i
+        
+        # Calculate the midpoint of the new block for the label
+        num_neurons_in_group = len(group_indices)
+        y_tick_locations.append(y_cursor + (num_neurons_in_group - 1) / 2)
+        y_tick_labels.append(group_name)
+
+        # Advance the cursor for the next group
+        y_cursor += num_neurons_in_group + gap_between_groups
+
+    if not index_to_plot_y_map:
+        print("  [Warning] None of the selected groups contained valid neurons. Skipping plot.")
+        return
+        
+    # Apply the new Y-axis mapping to the spike data
+    trial_spikes['plot_y'] = trial_spikes['neuron_index'].map(index_to_plot_y_map)
+    # Drop spikes from neurons we are not plotting
+    trial_spikes.dropna(subset=['plot_y'], inplace=True)
+
+    if trial_spikes.empty:
+        print("  [Warning] No spikes found for any of the selected groups. No plot will be generated.")
+        return
+
+    # --- Plotting Logic ---
+    plt.figure(figsize=(15, 10))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(groups_to_plot)))
+    group_to_color = {name: color for name, color in zip(groups_to_plot, colors)}
+
+    # Map neuron index back to group name to color the points
+    index_to_group_map = {idx: name for name, indices in data["neuron_ranges"].items() for idx in indices}
+    trial_spikes['group_name'] = trial_spikes['neuron_id'].map(index_to_group_map)
+    
+    # We plot all points at once for efficiency, colored by their group
+    plt.scatter(
+        trial_spikes['spike_time_ms'],
+        trial_spikes['plot_y'],
+        s=5,
+        c=trial_spikes['group_name'].map(group_to_color),
+        marker='.'
+    )
+    
+    plt.xlabel("Time (ms)", fontsize=12)
+    plt.ylabel("Neuron Group", fontsize=12)
+    plt.title(f"Raster Plot of Selected Neuron Groups (Trial {trial_to_plot})", fontsize=16)
+    
+    plt.yticks(ticks=y_tick_locations, labels=y_tick_labels, fontsize=9)
+    plt.grid(True, linestyle='--', alpha=0.5, axis='x') # Grid on x-axis only
+    plt.tight_layout()
+    
+    plot_path = os.path.join(save_dir, "raster_plot_selected_groups.png")
+    plt.savefig(plot_path, dpi=300)
+    plt.close()
+    print(f"  [Info] Raster plot saved to: {plot_path}")
+
+
 def run_experiment(config_path):
     """Orchestrates the entire multi-trial experiment from a config file."""
     config = load_config(config_path)
@@ -467,6 +561,9 @@ def run_experiment(config_path):
         os.path.join(save_dir, "spikes.parquet"), compression="gzip", engine="pyarrow"
     )
     print(f"  [Info] Aggregated spike data saved to: {save_dir}")
+
+    if not spike_df.empty and "raster_plot_config" in config:
+        create_raster_plot(spike_df, save_dir, data, config["raster_plot_config"])
 
     t_run_s = params["t_run_ms"] / 1000.0
     post_process(spike_df, data, save_dir, n_trials, t_run_s)

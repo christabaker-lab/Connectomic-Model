@@ -1,7 +1,7 @@
 {
   "output_config": {
     "base_output_directory": "simulation_results",
-    "output_directory_name": "JOA-L50R50-100runs"
+    "output_directory_name": "JOAB_LR-50prcnt-100Hz-pC1de-50prcnt-silence"
   },
   "simulation_parameters": {
     "n_cores": -1,
@@ -10,7 +10,7 @@
     "v_th_mv": -45.0,
     "t_rfc_ms": 2.2,
     "tau_ms": 5.0,
-    "w_syn_mv": 0.8,
+    "w_syn_mv": 1,
     "f_poi": 150
   },
   "file_paths": {
@@ -26,12 +26,12 @@
         {
           "group_name": "JO-A",
           "random_selection_percent": 50,
-          "poisson_rate_hz": 250
+          "poisson_rate_hz": 100
         },
         {
           "group_name": "JO-B",
           "random_selection_percent": 50,
-          "poisson_rate_hz": 250
+          "poisson_rate_hz": 100
         }
       ]
     },
@@ -41,12 +41,12 @@
         {
           "group_name": "JO-A",
           "random_selection_percent": 50,
-          "poisson_rate_hz": 250
+          "poisson_rate_hz": 100
         },
         {
           "group_name": "JO-B",
           "random_selection_percent": 50,
-          "poisson_rate_hz": 250
+          "poisson_rate_hz": 100
         }
       ]
     }
@@ -54,11 +54,46 @@
   "silencing_config": {
       "left_hemisphere": {
         "activate": true,
-        "groups": []
+        "groups": [
+          {
+            "group_name": "pC1d",
+            "random_selection_percent": 50
+          },
+          {
+            "group_name": "pC1e",
+            "random_selection_percent": 50
+          }
+        ]
       },
       "right_hemisphere": {
-        "activate": false,
-        "groups": []
+        "activate": true,
+        "groups": [
+          {
+            "group_name": "pC1d",
+            "random_selection_percent": 50
+          },
+          {
+            "group_name": "pC1e",
+            "random_selection_percent": 50
+          }
+        ]
       }
-  }
+  },
+   "raster_plot_config": {
+        "enabled": true,
+        "groups_to_plot": [
+            "pMN2_L",
+            "pMN2_R",
+            "pMN1_L",
+            "pMN1_R",
+            "pC2la_L",
+            "pC2la_R",
+            "pC2lb_L",
+            "pC2lb_R",
+            "pC1d_L",
+            "pC1d_R",
+            "pC1e_L",
+            "pC1e_R"
+        ]
+    }
 }
