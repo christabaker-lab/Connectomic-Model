@@ -1,5 +1,3 @@
-fafbseg
-caveclient
 matplotlib
 seaborn
 numpy

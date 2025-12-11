@@ -405,7 +405,10 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
 def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     """
     Creates a raster plot for user-selected neuron groups, remapping the Y-axis
-    to group neurons together visually and ensure labels are aligned.
+    to group neurons together visually. Neurons belonging to more than one
+    plotted group are colored white.
+    
+    **This version dynamically adjusts figure height to prevent Y-axis label overlap.**
     """
     groups_to_plot = plot_config.get("groups_to_plot", [])
     if not plot_config.get("enabled", False) or not groups_to_plot:
@@ -423,8 +426,9 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     y_cursor = 0
     y_tick_locations, y_tick_labels = [], []
     index_to_plot_y_map = {}
+    index_to_group_name_map = {} # This will store the *final* group for coloring
     
-    # Define a visual gap between groups
+    OVERLAP_GROUP_NAME = "OVERLAP" 
     gap_between_groups = 10 
 
     for group_name in groups_to_plot:
@@ -438,46 +442,63 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
         if not group_indices:
             continue
             
-        # Map each original index to its new Y position in the contiguous block
         for i, original_index in enumerate(group_indices):
             index_to_plot_y_map[original_index] = y_cursor + i
+            
+            if original_index in index_to_group_name_map:
+                index_to_group_name_map[original_index] = OVERLAP_GROUP_NAME
+            else:
+                index_to_group_name_map[original_index] = group_name
         
-        # Calculate the midpoint of the new block for the label
         num_neurons_in_group = len(group_indices)
         y_tick_locations.append(y_cursor + (num_neurons_in_group - 1) / 2)
         y_tick_labels.append(group_name)
 
-        # Advance the cursor for the next group
         y_cursor += num_neurons_in_group + gap_between_groups
 
     if not index_to_plot_y_map:
         print("  [Warning] None of the selected groups contained valid neurons. Skipping plot.")
         return
         
-    # Apply the new Y-axis mapping to the spike data
+    # Apply mappings
     trial_spikes['plot_y'] = trial_spikes['neuron_index'].map(index_to_plot_y_map)
-    # Drop spikes from neurons we are not plotting
-    trial_spikes.dropna(subset=['plot_y'], inplace=True)
+    trial_spikes['group_name'] = trial_spikes['neuron_index'].map(index_to_group_name_map)
+    
+    trial_spikes.dropna(subset=['plot_y', 'group_name'], inplace=True) 
 
     if trial_spikes.empty:
         print("  [Warning] No spikes found for any of the selected groups. No plot will be generated.")
         return
 
     # --- Plotting Logic ---
-    plt.figure(figsize=(15, 10))
+    
+    # --- NEW: Calculate dynamic figure height ---
+    num_labels = len(y_tick_labels)
+    # Set a base height (for title, x-axis, margins) and add height per label
+    base_height_inches = 4
+    height_per_label_inches = 0.3  # 0.3 inches per label
+    
+    dynamic_height = base_height_inches + num_labels * height_per_label_inches
+    
+    # Set a reasonable minimum and maximum height
+    dynamic_height = max(10, min(80, dynamic_height)) # Min 10in, Max 80in
+    
+    print(f"  [Info] Plotting {num_labels} groups. Setting figure height to {dynamic_height:.1f} inches.")
+    # --- END NEW ---
+    
+    plt.figure(figsize=(15, dynamic_height)) # <-- DYNAMIC HEIGHT IS USED HERE
+    
     colors = plt.cm.tab10(np.linspace(0, 1, len(groups_to_plot)))
     group_to_color = {name: color for name, color in zip(groups_to_plot, colors)}
+    group_to_color[OVERLAP_GROUP_NAME] = '#FFFFFF' # Set color to white
 
-    # Map neuron index back to group name to color the points
-    index_to_group_map = {idx: name for name, indices in data["neuron_ranges"].items() for idx in indices}
-    trial_spikes['group_name'] = trial_spikes['neuron_id'].map(index_to_group_map)
+    spike_colors = trial_spikes['group_name'].map(group_to_color)
     
-    # We plot all points at once for efficiency, colored by their group
     plt.scatter(
         trial_spikes['spike_time_ms'],
         trial_spikes['plot_y'],
-        s=5,
-        c=trial_spikes['group_name'].map(group_to_color),
+        s=20,
+        c='#000000',
         marker='.'
     )
     
@@ -485,15 +506,20 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     plt.ylabel("Neuron Group", fontsize=12)
     plt.title(f"Raster Plot of Selected Neuron Groups (Trial {trial_to_plot})", fontsize=16)
     
-    plt.yticks(ticks=y_tick_locations, labels=y_tick_labels, fontsize=9)
-    plt.grid(True, linestyle='--', alpha=0.5, axis='x') # Grid on x-axis only
+    # --- CHANGED: Reduced font size from 9 to 8 ---
+    plt.yticks(ticks=y_tick_locations, labels=y_tick_labels, fontsize=8) 
+    
+    # Set plot background to dark to see the white dots
+    ax = plt.gca()
+    ax.set_facecolor('#FFFFFF') # Dark grey background
+    
+    plt.grid(True, linestyle='--', alpha=0.2, axis='x') # Fainter grid on x-axis only
     plt.tight_layout()
     
-    plot_path = os.path.join(save_dir, "raster_plot_selected_groups.png")
-    plt.savefig(plot_path, dpi=300)
+    plot_path = os.path.join(save_dir, "raster_plot_selected_groups.svg")
+    plt.savefig(plot_path, dpi=300, format='svg')
     plt.close()
     print(f"  [Info] Raster plot saved to: {plot_path}")
-
 
 def run_experiment(config_path):
     """Orchestrates the entire multi-trial experiment from a config file."""
