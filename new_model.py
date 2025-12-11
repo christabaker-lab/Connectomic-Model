@@ -521,6 +521,7 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     plt.close()
     print(f"  [Info] Raster plot saved to: {plot_path}")
 
+
 def run_experiment(config_path):
     """Orchestrates the entire multi-trial experiment from a config file."""
     config = load_config(config_path)
