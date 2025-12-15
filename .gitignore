@@ -9,3 +9,8 @@ htmlcov/
 .tox/
 docs/_build/
 /simulation_results/*
+.DS_Store
+err_files/*
+old_files/*
+out_files/*
+run_configs/*

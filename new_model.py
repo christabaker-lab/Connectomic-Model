@@ -10,6 +10,7 @@ from joblib import Parallel, delayed, parallel_backend
 import matplotlib.pyplot as plt
 
 # Import Brian2 components
+import brian2
 from brian2 import (
     NeuronGroup,
     Synapses,
@@ -21,6 +22,7 @@ from brian2 import (
     ms,
     Hz,
 )
+
 
 
 def load_config(config_path):
