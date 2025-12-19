@@ -2,27 +2,26 @@ import os
 import json
 import pickle
 import random
-from textwrap import dedent
-from datetime import datetime
+import argparse
 import pandas as pd
 import numpy as np
-from joblib import Parallel, delayed, parallel_backend
-import matplotlib.pyplot as plt
+from textwrap import dedent
+from datetime import datetime
 
 # Import Brian2 components
-import brian2
 from brian2 import (
-    NeuronGroup,
-    Synapses,
-    PoissonInput,
-    SpikeMonitor,
-    Network,
-    start_scope,
-    mV,
-    ms,
-    Hz,
+    NeuronGroup, Synapses, PoissonInput, SpikeMonitor, Network,
+    start_scope, mV, ms, Hz, store, restore, prefs, seed, defaultclock
 )
 
+# ---------------------------------------------------------
+# OPTIMIZATION: Enable C++ Compilation
+# ---------------------------------------------------------
+try:
+    import cython
+    prefs.codegen.target = 'cython'
+except ImportError:
+    pass # Fallback to numpy (slower)
 
 
 def load_config(config_path):
@@ -67,42 +66,38 @@ def load_data(paths):
         raise
 
 
-def prepare_stimulation(config, data):
-    """Processes the stimulation config to get a list of neurons to activate."""
-    print("  [Info] Preparing stimulation based on config...")
-    neurons_to_activate = []
+def prepare_stimulation(config, data, batch_seed_offset):
+    """Selects neurons to stimulate using a specific random seed."""
+    # Ensure randomness is deterministic per batch/trial
+    random.seed(batch_seed_offset)
     
+    neurons_to_activate = []
     stimulation_plan = config["stimulation_config"]
     neuron_ranges = data["neuron_ranges"]
     id_to_idx = data["id_to_idx"]
 
     for side, hemisphere_config in stimulation_plan.items():
-        if not hemisphere_config["activate"]:
-            continue
-            
+        if not hemisphere_config["activate"]: continue
+        
         for group_config in hemisphere_config["groups"]:
             base_group_name = group_config['group_name']
-
             if base_group_name.lower().startswith('cluster'):
-                group_name_to_lookup = base_group_name
+                group_name = base_group_name
             else:
-                side_suffix = '_L' if 'left' in side else '_R'
-                group_name_to_lookup = base_group_name + side_suffix
+                group_name = base_group_name + ('_L' if 'left' in side else '_R')
             
-            if group_name_to_lookup not in neuron_ranges:
-                print(f"  [Warning] Group '{group_name_to_lookup}' not found in neuron_ranges. Skipping.")
-                continue
+            if group_name not in neuron_ranges: continue
 
-            candidate_root_ids = neuron_ranges[group_name_to_lookup]
+            candidate_root_ids = neuron_ranges[group_name]
             candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
 
-            if not candidate_indices:
-                continue
+            if not candidate_indices: continue
 
             percent = group_config["random_selection_percent"]
             num_to_select = int(len(candidate_indices) * (percent / 100.0))
             if num_to_select == 0 and len(candidate_indices) > 0: num_to_select = 1
             
+            # Sample using the seeded random instance
             selected_indices = random.sample(candidate_indices, num_to_select)
             
             rate = group_config["poisson_rate_hz"] * Hz
@@ -110,44 +105,34 @@ def prepare_stimulation(config, data):
                 neurons_to_activate.append({"index": idx, "rate": rate})
 
     unique_neurons = {item["index"]: item for item in neurons_to_activate}.values()
-    print(f"  [Info] Total unique neurons to be stimulated: {len(unique_neurons)}")
     return list(unique_neurons)
 
 
-def prepare_silencing(config, data):
-    """Processes the silencing config to get a list of neuron indices to silence."""
-    print("  [Info] Preparing silencing based on config...")
-    indices_to_silence = set()
+def prepare_silencing(config, data, batch_seed_offset):
+    # Ensure randomness is deterministic
+    random.seed(batch_seed_offset)
     
-    if "silencing_config" not in config:
-        return indices_to_silence
+    indices_to_silence = set()
+    if "silencing_config" not in config: return indices_to_silence
         
     silencing_plan = config["silencing_config"]
     neuron_ranges = data["neuron_ranges"]
     id_to_idx = data["id_to_idx"]
 
     for side, hemisphere_config in silencing_plan.items():
-        if not hemisphere_config.get("activate", False):
-            continue
+        if not hemisphere_config.get("activate", False): continue
             
         for group_config in hemisphere_config.get("groups", []):
             base_group_name = group_config['group_name']
-
             if base_group_name.lower().startswith('cluster'):
-                group_name_to_lookup = base_group_name
+                group_name = base_group_name
             else:
-                side_suffix = '_L' if 'left' in side else '_R'
-                group_name_to_lookup = base_group_name + side_suffix
+                group_name = base_group_name + ('_L' if 'left' in side else '_R')
             
-            if group_name_to_lookup not in neuron_ranges:
-                print(f"  [Warning] Silencing group '{group_name_to_lookup}' not found. Skipping.")
-                continue
+            if group_name not in neuron_ranges: continue
 
-            candidate_root_ids = neuron_ranges[group_name_to_lookup]
-            candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
-
-            if not candidate_indices:
-                continue
+            candidate_indices = [id_to_idx[str(rid)] for rid in neuron_ranges[group_name] if str(rid) in id_to_idx]
+            if not candidate_indices: continue
 
             percent = group_config.get("random_selection_percent", 100)
             num_to_select = int(len(candidate_indices) * (percent / 100.0))
@@ -156,8 +141,59 @@ def prepare_silencing(config, data):
             selected_indices = random.sample(candidate_indices, num_to_select)
             indices_to_silence.update(selected_indices)
 
-    print(f"  [Info] Total unique neurons to be silenced: {len(indices_to_silence)}")
     return indices_to_silence
+
+# ---------------------------------------------------------
+# CORE LOGIC: Build Once
+# ---------------------------------------------------------
+def build_network(params, data):
+    print("  [Info] Building network connectivity (This happens ONLY ONCE per batch)...")
+    start_scope()
+    defaultclock.dt = 0.1 * ms # Ensure consistent timestep
+    
+    brian_params = {
+        "v_0": -52 * mV, "v_rst": -52 * mV, "t_mbr": 20 * ms,
+        "v_th": params["v_th_mv"] * mV, "t_rfc": params["t_rfc_ms"] * ms,
+        "tau": params["tau_ms"] * ms, "w_syn": params["w_syn_mv"] * mV, "t_dly": 1.8 * ms,
+    }
+    
+    model_eqs = dedent(""" 
+        dv/dt = (v_0 - v + g) / t_mbr : volt (unless refractory)
+        dg/dt = -g / tau              : volt (unless refractory)
+        rfc                           : second 
+    """)
+
+    # Note: method='linear' is removed to allow C++ compilation if available
+    neu = NeuronGroup(
+        N=len(data["completeness"]),
+        model=model_eqs,
+        threshold="v > v_th",
+        reset="v = v_rst; g = 0 * mV",
+        refractory="rfc",
+        namespace=brian_params,
+    )
+    neu.v = brian_params["v_0"]
+    neu.g = 0 * mV
+    neu.rfc = brian_params["t_rfc"]
+
+    syn = Synapses(neu, neu, "w : volt", on_pre="g += w", delay=brian_params["t_dly"])
+    
+    # Costly operation done once
+    syn.connect(
+        i=data["connectivity"]["Presynaptic_Index"].values,
+        j=data["connectivity"]["Postsynaptic_Index"].values,
+    )
+    # Set weights
+    syn.w = data["connectivity"]["Connectivity x Excitatory"].values * brian_params["w_syn"]
+
+    spk_mon = SpikeMonitor(neu)
+    
+    net = Network(neu, syn, spk_mon)
+    
+    # Store the clean state
+    net.store("initial_state")
+    
+    return net, neu, syn, spk_mon, brian_params
 
 
 def run_single_trial(params, data, stimulated_neurons, silenced_indices):
@@ -614,7 +650,99 @@ def run_trial_wrapper(trial_num, config, data, params):
         "stimulated_neurons": stimulated_neurons_trial,
     }
 
+# ---------------------------------------------------------
+# CORE LOGIC: Run Batch
+# ---------------------------------------------------------
+def run_batch(config_path, batch_id, trials_per_batch):
+    config = load_config(config_path)
+    data = load_data(config["file_paths"])
+    params = config["simulation_parameters"]
+    
+    # 1. Build Network
+    net, neu, syn, spk_mon, brian_params = build_network(params, data)
+    
+    all_spikes = []
+    print(f"  [Info] Starting Batch {batch_id} with {trials_per_batch} trials...")
 
+    for i in range(trials_per_batch):
+        # Calculate a unique seed for this specific trial
+        # batch_id might be 1, i might be 0-49. 
+        # seed = 1000 + (1*1000) + 0 = 2000. Next trial = 2001.
+        trial_seed = 1000 + (batch_id * 1000) + i
+        seed(trial_seed) # Seed Brian2
+        np.random.seed(trial_seed) # Seed Numpy
+        
+        # Restore clean state
+        net.restore("initial_state")
+        
+        # Apply Silencing (Fast Vectorized)
+        silenced_indices = prepare_silencing(config, data, trial_seed)
+        if silenced_indices:
+            silenced_arr = np.array(list(silenced_indices))
+            syn.w[silenced_arr, :] = 0 * mV
+            
+        # Apply Stimulation
+        stimulated_neurons = prepare_stimulation(config, data, trial_seed)
+        active_inputs = []
+        for neuron_info in stimulated_neurons:
+            idx = neuron_info["index"]
+            p_input = PoissonInput(
+                target=neu[idx],
+                target_var="v",
+                N=1,
+                rate=neuron_info["rate"],
+                weight=brian_params["w_syn"] * params["f_poi"],
+            )
+            net.add(p_input)
+            active_inputs.append(p_input)
+            
+        # Run
+        net.run(duration=params["t_run_ms"] * ms)
+        
+        # Collect Data
+        # We only save necessary columns to save disk space
+        df_trial = pd.DataFrame({
+            "neuron_index": np.array(spk_mon.i, dtype=np.int32),
+            "spike_time_ms": np.array(spk_mon.t / ms, dtype=np.float32),
+            "trial": i + (batch_id * trials_per_batch) # Global trial number
+        })
+        
+        user_indices = {n["index"] for n in stimulated_neurons}
+        # Boolean is smaller than string 'user'/'natural'
+        df_trial["is_user_activated"] = df_trial["neuron_index"].isin(user_indices)
+        
+        all_spikes.append(df_trial)
+        
+        # Cleanup inputs for next loop
+        for p_input in active_inputs:
+            net.remove(p_input)
+
+    # Save Batch Results
+    if all_spikes:
+        spike_df = pd.concat(all_spikes, ignore_index=True)
+        
+        # Map IDs only at the end to save memory during loop
+        spike_df["neuron_id"] = spike_df["neuron_index"].map(data["idx_to_id"])
+        
+        # Construct output path
+        timestamp = datetime.now().strftime("%Y%m%d")
+        out_conf = config["output_config"]
+        save_dir = os.path.join(
+            out_conf["base_output_directory"], 
+            f"{out_conf['output_directory_name']}_{timestamp}"
+        )
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Filename includes batch_id
+        save_path = os.path.join(save_dir, f"spikes_batch_{batch_id}.parquet")
+        
+        spike_df.to_parquet(save_path, compression="gzip", engine="pyarrow")
+        print(f"  [Info] Batch {batch_id} Complete. Saved to {save_path}")
+    else:
+        print(f"  [Warning] Batch {batch_id} produced no spikes.")
+
+
+'''
 if __name__ == "__main__":
     import sys
 
@@ -633,3 +761,297 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("Experiment Finished.")
     print("=" * 50)
+    '''
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_path", help="Path to config JSON")
+    parser.add_argument("--batch_id", type=int, default=1, help="The ID of this job batch")
+    parser.add_argument("--trials", type=int, default=50, help="Trials per batch")
+    args = parser.parse_args()
+
+    run_batch(args.config_path, args.batch_id, args.trials)
+
+
+
+
+
+
+import os
+import json
+import pickle
+import random
+import argparse
+import pandas as pd
+import numpy as np
+from textwrap import dedent
+from datetime import datetime
+
+# Import Brian2 components
+from brian2 import (
+    NeuronGroup, Synapses, PoissonInput, SpikeMonitor, Network,
+    start_scope, mV, ms, Hz, store, restore, prefs, seed, defaultclock
+)
+
+# ---------------------------------------------------------
+# OPTIMIZATION: Enable C++ Compilation
+# ---------------------------------------------------------
+try:
+    import cython
+    prefs.codegen.target = 'cython'
+except ImportError:
+    pass # Fallback to numpy (slower)
+
+def load_config(config_path):
+    with open(config_path, "r") as f:
+        return json.load(f)
+
+def load_data(paths):
+    # Standard loading logic
+    completeness_df = pd.read_csv(paths["completeness_file"], index_col=0, dtype={"root_id": "str"})
+    connectivity_df = pd.read_parquet(paths["connectivity_file"])
+    with open(paths["neuron_ranges_pickle"], "rb") as f:
+        neuron_ranges = pickle.load(f)
+        
+    if "index" in completeness_df.columns:
+        completeness_df = completeness_df.set_index("index")
+
+    idx_to_id = completeness_df["root_id"].to_dict()
+    id_to_idx = {v: k for k, v in idx_to_id.items()}
+
+    return {
+        "completeness": completeness_df,
+        "connectivity": connectivity_df,
+        "neuron_ranges": neuron_ranges,
+        "idx_to_id": idx_to_id,
+        "id_to_idx": id_to_idx,
+    }
+
+def prepare_stimulation(config, data, batch_seed_offset):
+    """Selects neurons to stimulate using a specific random seed."""
+    # Ensure randomness is deterministic per batch/trial
+    random.seed(batch_seed_offset)
+    
+    neurons_to_activate = []
+    stimulation_plan = config["stimulation_config"]
+    neuron_ranges = data["neuron_ranges"]
+    id_to_idx = data["id_to_idx"]
+
+    for side, hemisphere_config in stimulation_plan.items():
+        if not hemisphere_config["activate"]: continue
+        
+        for group_config in hemisphere_config["groups"]:
+            base_group_name = group_config['group_name']
+            if base_group_name.lower().startswith('cluster'):
+                group_name = base_group_name
+            else:
+                group_name = base_group_name + ('_L' if 'left' in side else '_R')
+            
+            if group_name not in neuron_ranges: continue
+
+            candidate_root_ids = neuron_ranges[group_name]
+            candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
+
+            if not candidate_indices: continue
+
+            percent = group_config["random_selection_percent"]
+            num_to_select = int(len(candidate_indices) * (percent / 100.0))
+            if num_to_select == 0 and len(candidate_indices) > 0: num_to_select = 1
+            
+            # Sample using the seeded random instance
+            selected_indices = random.sample(candidate_indices, num_to_select)
+            
+            rate = group_config["poisson_rate_hz"] * Hz
+            for idx in selected_indices:
+                neurons_to_activate.append({"index": idx, "rate": rate})
+
+    unique_neurons = {item["index"]: item for item in neurons_to_activate}.values()
+    return list(unique_neurons)
+
+def prepare_silencing(config, data, batch_seed_offset):
+    # Ensure randomness is deterministic
+    random.seed(batch_seed_offset)
+    
+    indices_to_silence = set()
+    if "silencing_config" not in config: return indices_to_silence
+        
+    silencing_plan = config["silencing_config"]
+    neuron_ranges = data["neuron_ranges"]
+    id_to_idx = data["id_to_idx"]
+
+    for side, hemisphere_config in silencing_plan.items():
+        if not hemisphere_config.get("activate", False): continue
+            
+        for group_config in hemisphere_config.get("groups", []):
+            base_group_name = group_config['group_name']
+            if base_group_name.lower().startswith('cluster'):
+                group_name = base_group_name
+            else:
+                group_name = base_group_name + ('_L' if 'left' in side else '_R')
+            
+            if group_name not in neuron_ranges: continue
+
+            candidate_indices = [id_to_idx[str(rid)] for rid in neuron_ranges[group_name] if str(rid) in id_to_idx]
+            if not candidate_indices: continue
+
+            percent = group_config.get("random_selection_percent", 100)
+            num_to_select = int(len(candidate_indices) * (percent / 100.0))
+            if num_to_select == 0 and len(candidate_indices) > 0: num_to_select = 1
+            
+            selected_indices = random.sample(candidate_indices, num_to_select)
+            indices_to_silence.update(selected_indices)
+
+    return indices_to_silence
+
+# ---------------------------------------------------------
+# CORE LOGIC: Build Once
+# ---------------------------------------------------------
+def build_network(params, data):
+    print("  [Info] Building network connectivity (This happens ONLY ONCE per batch)...")
+    start_scope()
+    defaultclock.dt = 0.1 * ms # Ensure consistent timestep
+    
+    brian_params = {
+        "v_0": -52 * mV, "v_rst": -52 * mV, "t_mbr": 20 * ms,
+        "v_th": params["v_th_mv"] * mV, "t_rfc": params["t_rfc_ms"] * ms,
+        "tau": params["tau_ms"] * ms, "w_syn": params["w_syn_mv"] * mV, "t_dly": 1.8 * ms,
+    }
+    
+    model_eqs = dedent(""" 
+        dv/dt = (v_0 - v + g) / t_mbr : volt (unless refractory)
+        dg/dt = -g / tau              : volt (unless refractory)
+        rfc                           : second 
+    """)
+
+    # Note: method='linear' is removed to allow C++ compilation if available
+    neu = NeuronGroup(
+        N=len(data["completeness"]),
+        model=model_eqs,
+        threshold="v > v_th",
+        reset="v = v_rst; g = 0 * mV",
+        refractory="rfc",
+        namespace=brian_params,
+    )
+    neu.v = brian_params["v_0"]
+    neu.g = 0 * mV
+    neu.rfc = brian_params["t_rfc"]
+
+    syn = Synapses(neu, neu, "w : volt", on_pre="g += w", delay=brian_params["t_dly"])
+    
+    # Costly operation done once
+    syn.connect(
+        i=data["connectivity"]["Presynaptic_Index"].values,
+        j=data["connectivity"]["Postsynaptic_Index"].values,
+    )
+    # Set weights
+    syn.w = data["connectivity"]["Connectivity x Excitatory"].values * brian_params["w_syn"]
+
+    spk_mon = SpikeMonitor(neu)
+    
+    net = Network(neu, syn, spk_mon)
+    
+    # Store the clean state
+    net.store("initial_state")
+    
+    return net, neu, syn, spk_mon, brian_params
+
+# ---------------------------------------------------------
+# CORE LOGIC: Run Batch
+# ---------------------------------------------------------
+def run_batch(config_path, batch_id, trials_per_batch):
+    config = load_config(config_path)
+    data = load_data(config["file_paths"])
+    params = config["simulation_parameters"]
+    
+    # 1. Build Network
+    net, neu, syn, spk_mon, brian_params = build_network(params, data)
+    
+    all_spikes = []
+    print(f"  [Info] Starting Batch {batch_id} with {trials_per_batch} trials...")
+
+    for i in range(trials_per_batch):
+        # Calculate a unique seed for this specific trial
+        # batch_id might be 1, i might be 0-49. 
+        # seed = 1000 + (1*1000) + 0 = 2000. Next trial = 2001.
+        trial_seed = 1000 + (batch_id * 1000) + i
+        seed(trial_seed) # Seed Brian2
+        np.random.seed(trial_seed) # Seed Numpy
+        
+        # Restore clean state
+        net.restore("initial_state")
+        
+        # Apply Silencing (Fast Vectorized)
+        silenced_indices = prepare_silencing(config, data, trial_seed)
+        if silenced_indices:
+            silenced_arr = np.array(list(silenced_indices))
+            syn.w[silenced_arr, :] = 0 * mV
+            
+        # Apply Stimulation
+        stimulated_neurons = prepare_stimulation(config, data, trial_seed)
+        active_inputs = []
+        for neuron_info in stimulated_neurons:
+            idx = neuron_info["index"]
+            p_input = PoissonInput(
+                target=neu[idx],
+                target_var="v",
+                N=1,
+                rate=neuron_info["rate"],
+                weight=brian_params["w_syn"] * params["f_poi"],
+            )
+            net.add(p_input)
+            active_inputs.append(p_input)
+            
+        # Run
+        net.run(duration=params["t_run_ms"] * ms)
+        
+        # Collect Data
+        # We only save necessary columns to save disk space
+        df_trial = pd.DataFrame({
+            "neuron_index": np.array(spk_mon.i, dtype=np.int32),
+            "spike_time_ms": np.array(spk_mon.t / ms, dtype=np.float32),
+            "trial": i + (batch_id * trials_per_batch) # Global trial number
+        })
+        
+        user_indices = {n["index"] for n in stimulated_neurons}
+        # Boolean is smaller than string 'user'/'natural'
+        df_trial["is_user_activated"] = df_trial["neuron_index"].isin(user_indices)
+        
+        all_spikes.append(df_trial)
+        
+        # Cleanup inputs for next loop
+        for p_input in active_inputs:
+            net.remove(p_input)
+
+    # Save Batch Results
+    if all_spikes:
+        spike_df = pd.concat(all_spikes, ignore_index=True)
+        
+        # Map IDs only at the end to save memory during loop
+        spike_df["neuron_id"] = spike_df["neuron_index"].map(data["idx_to_id"])
+        
+        # Construct output path
+        timestamp = datetime.now().strftime("%Y%m%d")
+        out_conf = config["output_config"]
+        save_dir = os.path.join(
+            out_conf["base_output_directory"], 
+            f"{out_conf['output_directory_name']}_{timestamp}"
+        )
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Filename includes batch_id
+        save_path = os.path.join(save_dir, f"spikes_batch_{batch_id}.parquet")
+        
+        spike_df.to_parquet(save_path, compression="gzip", engine="pyarrow")
+        print(f"  [Info] Batch {batch_id} Complete. Saved to {save_path}")
+    else:
+        print(f"  [Warning] Batch {batch_id} produced no spikes.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_path", help="Path to config JSON")
+    parser.add_argument("--batch_id", type=int, default=1, help="The ID of this job batch")
+    parser.add_argument("--trials", type=int, default=50, help="Trials per batch")
+    args = parser.parse_args()
+
+    run_batch(args.config_path, args.batch_id, args.trials)
