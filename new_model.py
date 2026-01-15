@@ -66,7 +66,10 @@ def load_data(paths):
 
 
 def prepare_stimulation(config, data):
-    """Processes the stimulation config to get a list of neurons to activate."""
+    """
+    Processes the stimulation config to get a list of neurons to activate.
+    Updated to handle 'sideless' neurons (e.g. WV-WV-1).
+    """
     print("  [Info] Preparing stimulation based on config...")
     neurons_to_activate = []
     
@@ -81,16 +84,28 @@ def prepare_stimulation(config, data):
         for group_config in hemisphere_config["groups"]:
             base_group_name = group_config['group_name']
 
+            # Case A: It's a Cluster
             if base_group_name.lower().startswith('cluster'):
                 group_name_to_lookup = base_group_name
+                if group_name_to_lookup not in neuron_ranges:
+                    print(f"  [Warning] Cluster '{group_name_to_lookup}' not found in neuron_ranges. Skipping.")
+                    continue
+
+            # Case B: It's a named Group (Try Sided -> Fallback to Base)
             else:
                 side_suffix = '_L' if 'left' in side else '_R'
-                group_name_to_lookup = base_group_name + side_suffix
-            
-            if group_name_to_lookup not in neuron_ranges:
-                print(f"  [Warning] Group '{group_name_to_lookup}' not found in neuron_ranges. Skipping.")
-                continue
+                sided_name = base_group_name + side_suffix
+                
+                if sided_name in neuron_ranges:
+                    group_name_to_lookup = sided_name
+                elif base_group_name in neuron_ranges:
+                    # Fallback for neurons without sides (e.g. WV-WV-1)
+                    group_name_to_lookup = base_group_name
+                else:
+                    print(f"  [Warning] Group '{base_group_name}' not found (checked '{sided_name}' and '{base_group_name}'). Skipping.")
+                    continue
 
+            # --- Proceed with valid group ---
             candidate_root_ids = neuron_ranges[group_name_to_lookup]
             candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
 
@@ -113,7 +128,10 @@ def prepare_stimulation(config, data):
 
 
 def prepare_silencing(config, data):
-    """Processes the silencing config to get a list of neuron indices to silence."""
+    """
+    Processes the silencing config to get a list of neuron indices to silence.
+    Updated to handle 'sideless' neurons.
+    """
     print("  [Info] Preparing silencing based on config...")
     indices_to_silence = set()
     
@@ -131,15 +149,25 @@ def prepare_silencing(config, data):
         for group_config in hemisphere_config.get("groups", []):
             base_group_name = group_config['group_name']
 
+            # Case A: Cluster
             if base_group_name.lower().startswith('cluster'):
                 group_name_to_lookup = base_group_name
+                if group_name_to_lookup not in neuron_ranges:
+                    print(f"  [Warning] Silencing Cluster '{group_name_to_lookup}' not found. Skipping.")
+                    continue
+            
+            # Case B: Named Group
             else:
                 side_suffix = '_L' if 'left' in side else '_R'
-                group_name_to_lookup = base_group_name + side_suffix
-            
-            if group_name_to_lookup not in neuron_ranges:
-                print(f"  [Warning] Silencing group '{group_name_to_lookup}' not found. Skipping.")
-                continue
+                sided_name = base_group_name + side_suffix
+                
+                if sided_name in neuron_ranges:
+                    group_name_to_lookup = sided_name
+                elif base_group_name in neuron_ranges:
+                    group_name_to_lookup = base_group_name
+                else:
+                    print(f"  [Warning] Silencing group '{base_group_name}' not found (checked '{sided_name}' and '{base_group_name}'). Skipping.")
+                    continue
 
             candidate_root_ids = neuron_ranges[group_name_to_lookup]
             candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
@@ -247,19 +275,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         if indices:
             analysis_groups[group_name] = {"indices": indices, "type": "group"}
 
-    # for cluster_id, cluster_group in data["jo_clusters"].groupby("Cluster"):
-    #     root_ids = cluster_group["pre_root_id"].unique()
-    #     indices = [
-    #         data["id_to_idx"][str(rid)]
-    #         for rid in root_ids
-    #         if str(rid) in data["id_to_idx"]
-    #     ]
-    #     if indices:
-    #         analysis_groups[f"Cluster_{cluster_id}"] = {
-    #             "indices": indices,
-    #             "type": "cluster",
-    #         }
-
     for group_name, group_info in analysis_groups.items():
         indices = group_info["indices"]
         group_spikes = spike_df[spike_df["neuron_index"].isin(indices)]
@@ -281,14 +296,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         # This rate calculation is already an average of per-trial rates, so it's correct
         rates_per_trial = spikes_per_trial / t_run_s
         mean_rate, std_rate = rates_per_trial.mean(), rates_per_trial.std()
-
-        if not group_spikes.empty and avg_spikes == 0:
-            print("\n" + "="*20 + " DEBUGGING " + "="*20)
-            print(f"Found group with spikes but zero stats: {group_name}")
-            print(f"Total spikes found for this group: {len(group_spikes)}")
-            print("Spikes per trial calculation:")
-            print(spikes_per_trial)
-            print("="*51 + "\n")
 
         if not group_spikes.empty:
             first_spike = group_spikes.loc[group_spikes["spike_time_ms"].idxmin()]
@@ -405,10 +412,7 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
 def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     """
     Creates a raster plot for user-selected neuron groups, remapping the Y-axis
-    to group neurons together visually. Neurons belonging to more than one
-    plotted group are colored white.
-    
-    **This version dynamically adjusts figure height to prevent Y-axis label overlap.**
+    to group neurons together visually.
     """
     groups_to_plot = plot_config.get("groups_to_plot", [])
     if not plot_config.get("enabled", False) or not groups_to_plot:
@@ -432,11 +436,21 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     gap_between_groups = 10 
 
     for group_name in groups_to_plot:
+        # Check if the group exists directly
         if group_name not in data["neuron_ranges"]:
-            print(f"  [Warning] Group '{group_name}' not found in data. Skipping this group.")
-            continue
-        
+            # Try appending suffix if not found, just in case config used base name
+            # But usually config should be precise for raster plots
+            if group_name + "_L" in data["neuron_ranges"]:
+                group_name = group_name + "_L"
+            elif group_name + "_R" in data["neuron_ranges"]:
+                group_name = group_name + "_R"
+            else:
+                print(f"  [Warning] Group '{group_name}' not found in data. Skipping this group.")
+                group_name = group_name
+                
+        print(group_name)
         root_ids = data["neuron_ranges"][group_name]
+        print(root_ids)
         group_indices = sorted([data["id_to_idx"][str(rid)] for rid in root_ids if str(rid) in data["id_to_idx"]])
         
         if not group_indices:
@@ -471,26 +485,20 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
         return
 
     # --- Plotting Logic ---
-    
-    # --- NEW: Calculate dynamic figure height ---
     num_labels = len(y_tick_labels)
-    # Set a base height (for title, x-axis, margins) and add height per label
     base_height_inches = 4
-    height_per_label_inches = 0.3  # 0.3 inches per label
+    height_per_label_inches = 0.3
     
     dynamic_height = base_height_inches + num_labels * height_per_label_inches
-    
-    # Set a reasonable minimum and maximum height
-    dynamic_height = max(10, min(80, dynamic_height)) # Min 10in, Max 80in
+    dynamic_height = max(10, min(80, dynamic_height)) 
     
     print(f"  [Info] Plotting {num_labels} groups. Setting figure height to {dynamic_height:.1f} inches.")
-    # --- END NEW ---
     
-    plt.figure(figsize=(15, dynamic_height)) # <-- DYNAMIC HEIGHT IS USED HERE
+    plt.figure(figsize=(15, dynamic_height)) 
     
     colors = plt.cm.tab10(np.linspace(0, 1, len(groups_to_plot)))
     group_to_color = {name: color for name, color in zip(groups_to_plot, colors)}
-    group_to_color[OVERLAP_GROUP_NAME] = '#FFFFFF' # Set color to white
+    group_to_color[OVERLAP_GROUP_NAME] = '#FFFFFF' 
 
     spike_colors = trial_spikes['group_name'].map(group_to_color)
     
@@ -506,14 +514,12 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     plt.ylabel("Neuron Group", fontsize=12)
     plt.title(f"Raster Plot of Selected Neuron Groups (Trial {trial_to_plot})", fontsize=16)
     
-    # --- CHANGED: Reduced font size from 9 to 8 ---
     plt.yticks(ticks=y_tick_locations, labels=y_tick_labels, fontsize=8) 
     
-    # Set plot background to dark to see the white dots
     ax = plt.gca()
-    ax.set_facecolor('#FFFFFF') # Dark grey background
+    ax.set_facecolor('#FFFFFF') 
     
-    plt.grid(True, linestyle='--', alpha=0.2, axis='x') # Fainter grid on x-axis only
+    plt.grid(True, linestyle='--', alpha=0.2, axis='x') 
     plt.tight_layout()
     
     plot_path = os.path.join(save_dir, "raster_plot_selected_groups.svg")

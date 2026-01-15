@@ -9,3 +9,4 @@ htmlcov/
 .tox/
 docs/_build/
 /simulation_results/*
+data_setup/*
