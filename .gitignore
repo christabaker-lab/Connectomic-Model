@@ -10,3 +10,8 @@ htmlcov/
 docs/_build/
 /simulation_results/*
 data_setup/*
+.DS_Store
+err_files/*
+old_files/*
+out_files/*
+run_configs/*
