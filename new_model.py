@@ -2,25 +2,51 @@ import os
 import json
 import pickle
 import random
-from textwrap import dedent
-from datetime import datetime
+import argparse
 import pandas as pd
 import numpy as np
-from joblib import Parallel, delayed, parallel_backend
-import matplotlib.pyplot as plt
+from textwrap import dedent
+from datetime import datetime
+from glob import glob
 
 # Import Brian2 components
 from brian2 import (
-    NeuronGroup,
-    Synapses,
-    PoissonInput,
-    SpikeMonitor,
-    Network,
-    start_scope,
-    mV,
-    ms,
-    Hz,
+    NeuronGroup, Synapses, PoissonInput, SpikeMonitor, Network,
+    start_scope, mV, ms, Hz, store, restore, prefs, seed, defaultclock
 )
+
+# ---------------------------------------------------------
+# OPTIMIZATION: Enable CUDA or C++ Compilation
+# ---------------------------------------------------------
+def setup_brian2_backend(use_cuda=False, gpu_id=0):
+    """
+    Configure Brian2 to use either CUDA or C++ compilation.
+    
+    Args:
+        use_cuda: Whether to use CUDA (GPU) acceleration
+        gpu_id: Which GPU device to use (0, 1, 2, etc.)
+    """
+    if use_cuda:
+        try:
+            import brian2cuda
+            prefs.codegen.target = 'cuda'
+            prefs.devices.cuda_standalone.cuda_backend.cuda_device = gpu_id
+            print(f"  [Info] Brian2CUDA enabled on GPU {gpu_id}")
+        except ImportError:
+            print("  [Warning] brian2cuda not installed. Install with: pip install brian2cuda")
+            print("  [Info] Falling back to C++/Cython")
+            use_cuda = False
+    
+    if not use_cuda:
+        try:
+            import cython
+            prefs.codegen.target = 'cython'
+            print("  [Info] Using Cython backend")
+        except ImportError:
+            print("  [Info] Using numpy backend (slowest)")
+            pass
+    
+    return use_cuda
 
 
 def load_config(config_path):
@@ -65,33 +91,25 @@ def load_data(paths):
         raise
 
 
-def prepare_stimulation(config, data):
-    """
-    Processes the stimulation config to get a list of neurons to activate.
-    Updated to handle 'sideless' neurons (e.g. WV-WV-1).
-    """
-    print("  [Info] Preparing stimulation based on config...")
-    neurons_to_activate = []
+def prepare_stimulation(config, data, batch_seed_offset):
+    """Processes the stimulation config to get a list of neurons to activate."""
+    random.seed(batch_seed_offset)
     
+    neurons_to_activate = []
     stimulation_plan = config["stimulation_config"]
     neuron_ranges = data["neuron_ranges"]
     id_to_idx = data["id_to_idx"]
 
     for side, hemisphere_config in stimulation_plan.items():
-        if not hemisphere_config["activate"]:
-            continue
-            
+        if not hemisphere_config["activate"]: continue
+        
         for group_config in hemisphere_config["groups"]:
             base_group_name = group_config['group_name']
 
-            # Case A: It's a Cluster
             if base_group_name.lower().startswith('cluster'):
                 group_name_to_lookup = base_group_name
                 if group_name_to_lookup not in neuron_ranges:
-                    print(f"  [Warning] Cluster '{group_name_to_lookup}' not found in neuron_ranges. Skipping.")
                     continue
-
-            # Case B: It's a named Group (Try Sided -> Fallback to Base)
             else:
                 side_suffix = '_L' if 'left' in side else '_R'
                 sided_name = base_group_name + side_suffix
@@ -99,18 +117,14 @@ def prepare_stimulation(config, data):
                 if sided_name in neuron_ranges:
                     group_name_to_lookup = sided_name
                 elif base_group_name in neuron_ranges:
-                    # Fallback for neurons without sides (e.g. WV-WV-1)
                     group_name_to_lookup = base_group_name
                 else:
-                    print(f"  [Warning] Group '{base_group_name}' not found (checked '{sided_name}' and '{base_group_name}'). Skipping.")
                     continue
 
-            # --- Proceed with valid group ---
             candidate_root_ids = neuron_ranges[group_name_to_lookup]
             candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
 
-            if not candidate_indices:
-                continue
+            if not candidate_indices: continue
 
             percent = group_config["random_selection_percent"]
             num_to_select = int(len(candidate_indices) * (percent / 100.0))
@@ -123,40 +137,30 @@ def prepare_stimulation(config, data):
                 neurons_to_activate.append({"index": idx, "rate": rate})
 
     unique_neurons = {item["index"]: item for item in neurons_to_activate}.values()
-    print(f"  [Info] Total unique neurons to be stimulated: {len(unique_neurons)}")
     return list(unique_neurons)
 
 
-def prepare_silencing(config, data):
-    """
-    Processes the silencing config to get a list of neuron indices to silence.
-    Updated to handle 'sideless' neurons.
-    """
-    print("  [Info] Preparing silencing based on config...")
-    indices_to_silence = set()
+def prepare_silencing(config, data, batch_seed_offset):
+    """Processes the silencing config to get a list of neuron indices to silence."""
+    random.seed(batch_seed_offset)
     
-    if "silencing_config" not in config:
-        return indices_to_silence
+    indices_to_silence = set()
+    if "silencing_config" not in config: return indices_to_silence
         
     silencing_plan = config["silencing_config"]
     neuron_ranges = data["neuron_ranges"]
     id_to_idx = data["id_to_idx"]
 
     for side, hemisphere_config in silencing_plan.items():
-        if not hemisphere_config.get("activate", False):
-            continue
+        if not hemisphere_config.get("activate", False): continue
             
         for group_config in hemisphere_config.get("groups", []):
             base_group_name = group_config['group_name']
 
-            # Case A: Cluster
             if base_group_name.lower().startswith('cluster'):
                 group_name_to_lookup = base_group_name
                 if group_name_to_lookup not in neuron_ranges:
-                    print(f"  [Warning] Silencing Cluster '{group_name_to_lookup}' not found. Skipping.")
                     continue
-            
-            # Case B: Named Group
             else:
                 side_suffix = '_L' if 'left' in side else '_R'
                 sided_name = base_group_name + side_suffix
@@ -166,14 +170,12 @@ def prepare_silencing(config, data):
                 elif base_group_name in neuron_ranges:
                     group_name_to_lookup = base_group_name
                 else:
-                    print(f"  [Warning] Silencing group '{base_group_name}' not found (checked '{sided_name}' and '{base_group_name}'). Skipping.")
                     continue
 
             candidate_root_ids = neuron_ranges[group_name_to_lookup]
             candidate_indices = [id_to_idx[str(rid)] for rid in candidate_root_ids if str(rid) in id_to_idx]
-
-            if not candidate_indices:
-                continue
+            
+            if not candidate_indices: continue
 
             percent = group_config.get("random_selection_percent", 100)
             num_to_select = int(len(candidate_indices) * (percent / 100.0))
@@ -182,65 +184,53 @@ def prepare_silencing(config, data):
             selected_indices = random.sample(candidate_indices, num_to_select)
             indices_to_silence.update(selected_indices)
 
-    print(f"  [Info] Total unique neurons to be silenced: {len(indices_to_silence)}")
     return indices_to_silence
 
 
-def run_single_trial(params, data, stimulated_neurons, silenced_indices):
-    """Builds and runs the Brian2 model for one trial."""
+def build_network(params, data):
+    """Build the Brian2 network once per batch."""
+    print("  [Info] Building network connectivity (This happens ONLY ONCE per batch)...")
     start_scope()
+    defaultclock.dt = 0.1 * ms
+    
     brian_params = {
-        "v_0": -52 * mV,
-        "v_rst": -52 * mV,
-        "t_mbr": 20 * ms,
-        "v_th": params["v_th_mv"] * mV,
-        "t_rfc": params["t_rfc_ms"] * ms,
-        "tau": params["tau_ms"] * ms,
-        "w_syn": params["w_syn_mv"] * mV,
-        "t_dly": 1.8 * ms,
+        "v_0": -52 * mV, "v_rst": -52 * mV, "t_mbr": 20 * ms,
+        "v_th": params["v_th_mv"] * mV, "t_rfc": params["t_rfc_ms"] * ms,
+        "tau": params["tau_ms"] * ms, "w_syn": params["w_syn_mv"] * mV, "t_dly": 1.8 * ms,
     }
-    model_eqs = dedent(
-        """ dv/dt = (v_0 - v + g) / t_mbr : volt (unless refractory)
-                           dg/dt = -g / tau              : volt (unless refractory)
-                           rfc                           : second """
-    )
+    
+    model_eqs = dedent(""" 
+        dv/dt = (v_0 - v + g) / t_mbr : volt (unless refractory)
+        dg/dt = -g / tau              : volt (unless refractory)
+        rfc                           : second 
+    """)
+
     neu = NeuronGroup(
         N=len(data["completeness"]),
         model=model_eqs,
-        method="linear",
         threshold="v > v_th",
         reset="v = v_rst; g = 0 * mV",
         refractory="rfc",
         namespace=brian_params,
     )
-    neu.v, neu.g, neu.rfc = brian_params["v_0"], 0 * mV, brian_params["t_rfc"]
+    neu.v = brian_params["v_0"]
+    neu.g = 0 * mV
+    neu.rfc = brian_params["t_rfc"]
+
     syn = Synapses(neu, neu, "w : volt", on_pre="g += w", delay=brian_params["t_dly"])
+    
     syn.connect(
         i=data["connectivity"]["Presynaptic_Index"].values,
         j=data["connectivity"]["Postsynaptic_Index"].values,
     )
-    syn.w = (
-        data["connectivity"]["Connectivity x Excitatory"].values * brian_params["w_syn"]
-    )
-    if silenced_indices:
-        for neuron_idx in silenced_indices:
-            syn.w[f"i == {neuron_idx}"] = 0 * mV
-    poisson_inputs = []
-    for neuron_info in stimulated_neurons:
-        idx = neuron_info["index"]
-        p_input = PoissonInput(
-            target=neu[idx],
-            target_var="v",
-            N=1,
-            rate=neuron_info["rate"],
-            weight=brian_params["w_syn"] * params["f_poi"],
-        )
-        neu[idx].rfc = 0 * ms
-        poisson_inputs.append(p_input)
+    syn.w = data["connectivity"]["Connectivity x Excitatory"].values * brian_params["w_syn"]
+
     spk_mon = SpikeMonitor(neu)
-    net = Network(neu, syn, spk_mon, *poisson_inputs)
-    net.run(duration=params["t_run_ms"] * ms)
-    return spk_mon
+    
+    net = Network(neu, syn, spk_mon)
+    net.store("initial_state")
+    
+    return net, neu, syn, spk_mon, brian_params
 
 
 def post_process(spike_df, data, save_dir, n_trials, t_run_s):
@@ -279,13 +269,11 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         indices = group_info["indices"]
         group_spikes = spike_df[spike_df["neuron_index"].isin(indices)]
 
-        # Calculate spikes per trial, reindex to include trials with 0 spikes, then get the average
         spikes_per_trial = (
             group_spikes.groupby("trial").size().reindex(range(n_trials), fill_value=0)
         )
         avg_spikes = spikes_per_trial.mean()
 
-        # Calculate unique spiking neurons per trial, reindex, then get the average
         unique_spikers_per_trial = (
             group_spikes.groupby("trial")["neuron_index"]
             .nunique()
@@ -293,7 +281,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         )
         avg_unique_spikers = unique_spikers_per_trial.mean()
 
-        # This rate calculation is already an average of per-trial rates, so it's correct
         rates_per_trial = spikes_per_trial / t_run_s
         mean_rate, std_rate = rates_per_trial.mean(), rates_per_trial.std()
 
@@ -330,21 +317,16 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
 
     print("  [Info] Finding top 20 most active ungrouped neurons...")
 
-    # Section to get unassigned top 20 most active neurons
-    # Get a set of all neuron indices that are already in a group
     all_grouped_indices = set()
     for group_info in analysis_groups.values():
         all_grouped_indices.update(group_info["indices"])
 
-    # Filter for spikes from ungrouped neurons
     ungrouped_spikes_df = spike_df[~spike_df["neuron_index"].isin(all_grouped_indices)]
 
     if not ungrouped_spikes_df.empty:
-        # 3. Calculate average firing rate for each ungrouped neuron
         total_spikes_per_neuron = ungrouped_spikes_df.groupby("neuron_index").size()
         avg_rate_per_neuron = total_spikes_per_neuron / (n_trials * t_run_s)
 
-        # 4. Get the top 20
         top_20_ungrouped_neurons = avg_rate_per_neuron.sort_values(
             ascending=False
         ).head(20)
@@ -355,7 +337,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
                 ungrouped_spikes_df["neuron_index"] == neuron_index
             ]
 
-            # Calculate stats for this individual neuron
             spikes_per_trial = (
                 neuron_spikes.groupby("trial")
                 .size()
@@ -367,7 +348,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
 
             first_spike = neuron_spikes.loc[neuron_spikes["spike_time_ms"].idxmin()]
 
-            # Format for the summary file
             neuron_label = first_spike["neuron_label"]
             side = "N/A"
             if isinstance(neuron_label, str) and neuron_label.endswith(("_L", "_R")):
@@ -389,7 +369,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
 
         if top_20_list:
             top_20_df = pd.DataFrame(top_20_list)
-            # Add a separator row for clarity in the CSV
             separator = pd.DataFrame([{"group": "--- TOP 20 INDIVIDUAL NEURONS ---"}])
             summary_df = pd.concat(
                 [summary_df, separator, top_20_df], ignore_index=True
@@ -399,8 +378,6 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
         summary_df["first_spike_neuron_id"] = (
             summary_df["first_spike_neuron_id"].fillna(0).astype(np.int64)
         )
-
-        # Round up the average spikes column to the next whole number
         summary_df['avg_number_of_spikes'] = np.ceil(summary_df['avg_number_of_spikes'])
 
     summary_df.to_csv(
@@ -410,10 +387,9 @@ def post_process(spike_df, data, save_dir, n_trials, t_run_s):
 
 
 def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
-    """
-    Creates a raster plot for user-selected neuron groups, remapping the Y-axis
-    to group neurons together visually.
-    """
+    """Creates a raster plot for user-selected neuron groups."""
+    import matplotlib.pyplot as plt
+    
     groups_to_plot = plot_config.get("groups_to_plot", [])
     if not plot_config.get("enabled", False) or not groups_to_plot:
         print("  [Info] Raster plot disabled or no groups specified in config. Skipping.")
@@ -426,31 +402,25 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
         print(f"  [Warning] No spikes in trial {trial_to_plot}. Skipping raster plot.")
         return
 
-    # --- Remapping Logic ---
     y_cursor = 0
     y_tick_locations, y_tick_labels = [], []
     index_to_plot_y_map = {}
-    index_to_group_name_map = {} # This will store the *final* group for coloring
+    index_to_group_name_map = {}
     
     OVERLAP_GROUP_NAME = "OVERLAP" 
     gap_between_groups = 10 
 
     for group_name in groups_to_plot:
-        # Check if the group exists directly
         if group_name not in data["neuron_ranges"]:
-            # Try appending suffix if not found, just in case config used base name
-            # But usually config should be precise for raster plots
             if group_name + "_L" in data["neuron_ranges"]:
                 group_name = group_name + "_L"
             elif group_name + "_R" in data["neuron_ranges"]:
                 group_name = group_name + "_R"
             else:
                 print(f"  [Warning] Group '{group_name}' not found in data. Skipping this group.")
-                group_name = group_name
+                continue
                 
-        print(group_name)
         root_ids = data["neuron_ranges"][group_name]
-        print(root_ids)
         group_indices = sorted([data["id_to_idx"][str(rid)] for rid in root_ids if str(rid) in data["id_to_idx"]])
         
         if not group_indices:
@@ -474,7 +444,6 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
         print("  [Warning] None of the selected groups contained valid neurons. Skipping plot.")
         return
         
-    # Apply mappings
     trial_spikes['plot_y'] = trial_spikes['neuron_index'].map(index_to_plot_y_map)
     trial_spikes['group_name'] = trial_spikes['neuron_index'].map(index_to_group_name_map)
     
@@ -484,7 +453,6 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
         print("  [Warning] No spikes found for any of the selected groups. No plot will be generated.")
         return
 
-    # --- Plotting Logic ---
     num_labels = len(y_tick_labels)
     base_height_inches = 4
     height_per_label_inches = 0.3
@@ -527,112 +495,241 @@ def create_raster_plot(spike_df, save_dir, data, plot_config, trial_to_plot=0):
     plt.close()
     print(f"  [Info] Raster plot saved to: {plot_path}")
 
-def run_experiment(config_path):
-    """Orchestrates the entire multi-trial experiment from a config file."""
+
+def run_batch(config_path, batch_id, trials_per_batch, use_cuda=False, gpu_id=0):
+    """
+    Run a batch of trials sequentially (GPU already provides parallelism).
+    
+    Args:
+        config_path: Path to config JSON
+        batch_id: ID of this batch
+        trials_per_batch: Number of trials to run
+        use_cuda: Whether to use CUDA acceleration
+        gpu_id: Which GPU to use (if multiple available)
+    """
+    # Setup backend
+    cuda_enabled = setup_brian2_backend(use_cuda=use_cuda, gpu_id=gpu_id)
+    
     config = load_config(config_path)
     data = load_data(config["file_paths"])
-
     params = config["simulation_parameters"]
-    n_trials = params.get("n_trials", 1)
-    n_cores = params.get("n_cores", -1)
-
-    print(
-        f"\n  [Info] Starting experiment with {n_trials} trials on {n_cores if n_cores > 0 else 'all available'} cores..."
-    )
-    with parallel_backend("loky", n_jobs=n_cores):
-        trial_results = Parallel()(
-            delayed(run_trial_wrapper)(i, config, data, params) for i in range(n_trials)
-        )
-    print("  [Info] All trials complete.")
-
-    print("  [Info] Aggregating and saving results...")
+    
+    print(f"  [Info] Starting Batch {batch_id} with {trials_per_batch} trials...")
+    if cuda_enabled:
+        print(f"  [Info] Using GPU {gpu_id} for acceleration")
+    
+    # Build network once
+    net, neu, syn, spk_mon, brian_params = build_network(params, data)
+    
     all_spikes = []
-
-    for i, result_dict in enumerate(trial_results):
-        df_trial = pd.DataFrame(
-            {
-                "neuron_index": result_dict["spike_indices"],
-                "spike_time_ms": result_dict["spike_times_ms"],
-            }
-        )
-        df_trial["trial"] = i
-
-        stimulated_in_trial = result_dict["stimulated_neurons"]
-        user_indices_for_this_trial = {n["index"] for n in stimulated_in_trial}
-
-        df_trial["activation_type"] = np.where(
-            df_trial["neuron_index"].isin(user_indices_for_this_trial),
-            "user",
-            "natural",
-        )
+    
+    for i in range(trials_per_batch):
+        trial_seed = 1000 + (batch_id * 1000) + i
+        seed(trial_seed)
+        np.random.seed(trial_seed)
+        
+        # Restore clean state
+        net.restore("initial_state")
+        
+        # Apply silencing (vectorized)
+        silenced_indices = prepare_silencing(config, data, trial_seed)
+        if silenced_indices:
+            silenced_arr = np.array(list(silenced_indices))
+            syn.w[silenced_arr, :] = 0 * mV
+            
+        # Apply stimulation
+        stimulated_neurons = prepare_stimulation(config, data, trial_seed)
+        active_inputs = []
+        for neuron_info in stimulated_neurons:
+            idx = neuron_info["index"]
+            p_input = PoissonInput(
+                target=neu[idx],
+                target_var="v",
+                N=1,
+                rate=neuron_info["rate"],
+                weight=brian_params["w_syn"] * params["f_poi"],
+            )
+            neu[idx].rfc = 0 * ms
+            net.add(p_input)
+            active_inputs.append(p_input)
+            
+        # Run simulation
+        net.run(duration=params["t_run_ms"] * ms)
+        
+        # Collect data
+        global_trial_num = i + ((batch_id - 1) * trials_per_batch)
+        df_trial = pd.DataFrame({
+            "neuron_index": np.array(spk_mon.i, dtype=np.int32),
+            "spike_time_ms": np.array(spk_mon.t / ms, dtype=np.float32),
+            "trial": global_trial_num
+        })
+        
+        user_indices = {n["index"] for n in stimulated_neurons}
+        df_trial["is_user_activated"] = df_trial["neuron_index"].isin(user_indices)
+        
         all_spikes.append(df_trial)
+        
+        # Cleanup inputs
+        for p_input in active_inputs:
+            net.remove(p_input)
+        
+        if (i + 1) % 10 == 0:
+            print(f"    [Progress] Completed {i + 1}/{trials_per_batch} trials")
 
-    if not all_spikes:
-        spike_df = pd.DataFrame()
-    else:
+    # Save results with experiment name in directory structure
+    if all_spikes:
         spike_df = pd.concat(all_spikes, ignore_index=True)
         spike_df["neuron_id"] = spike_df["neuron_index"].map(data["idx_to_id"])
+        
+        # Create experiment-specific directory structure (NO TIMESTAMP!)
+        out_conf = config["output_config"]
+        experiment_name = out_conf["output_directory_name"]
+        
+        # Save directory: base_output_directory/experiment_name/
+        save_dir = os.path.join(
+            out_conf["base_output_directory"], 
+            experiment_name  # NO TIMESTAMP - keeps all batches in same folder
+        )
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save config in experiment directory (only once per batch 1)
+        config_save_path = os.path.join(save_dir, "config.json")
+        if batch_id == 1 and not os.path.exists(config_save_path):
+            with open(config_save_path, 'w') as f:
+                json.dump(config, f, indent=2)
+        
+        # Filename includes batch_id
+        save_path = os.path.join(save_dir, f"spikes_batch_{batch_id}.parquet")
+        spike_df.to_parquet(save_path, compression="gzip", engine="pyarrow")
+        print(f"  [Info] Batch {batch_id} Complete. Saved to {save_path}")
+    else:
+        print(f"  [Warning] Batch {batch_id} produced no spikes.")
 
+
+def aggregate_and_postprocess(base_output_dir=None, experiment_name=None):
+    """
+    Aggregates all batch parquet files and runs post-processing.
+    Can process a single experiment or all experiments in the base directory.
+    
+    Args:
+        base_output_dir: Base directory containing experiment folders (e.g., "simulation_results")
+        experiment_name: Specific experiment to process, or None to process all
+    """
+    if base_output_dir is None:
+        base_output_dir = "simulation_results"
+    
+    if not os.path.exists(base_output_dir):
+        print(f"  [Error] Base output directory not found: {base_output_dir}")
+        return
+    
+    # Find all experiment directories to process
+    if experiment_name:
+        # Process single experiment
+        experiment_dirs = [os.path.join(base_output_dir, experiment_name)]
+    else:
+        # Process all experiments in base directory
+        experiment_dirs = [
+            os.path.join(base_output_dir, d) 
+            for d in os.listdir(base_output_dir) 
+            if os.path.isdir(os.path.join(base_output_dir, d))
+        ]
+    
+    if not experiment_dirs:
+        print(f"  [Error] No experiment directories found in {base_output_dir}")
+        return
+    
+    print("\n" + "="*70)
+    print(f"POST-PROCESSING {len(experiment_dirs)} EXPERIMENT(S)")
+    print("="*70 + "\n")
+    
+    for exp_dir in experiment_dirs:
+        exp_name = os.path.basename(exp_dir)
+        
+        # Check if this directory has batch files
+        batch_files = sorted(glob(os.path.join(exp_dir, "spikes_batch_*.parquet")))
+        if not batch_files:
+            print(f"  [Skip] No batch files found in {exp_name}")
+            continue
+        
+        print(f"\n{'='*70}")
+        print(f"Processing: {exp_name}")
+        print(f"{'='*70}")
+        
+        # Load config from experiment directory
+        config_path = os.path.join(exp_dir, "config.json")
+        if not os.path.exists(config_path):
+            print(f"  [Error] Config file not found in {exp_dir}")
+            continue
+        
+        config = load_config(config_path)
+        data = load_data(config["file_paths"])
+        params = config["simulation_parameters"]
+        
+        print(f"  [Info] Found {len(batch_files)} batch files to aggregate")
+        
+        # Load and concatenate all batches
+        all_batches = []
+        for batch_file in batch_files:
+            print(f"  [Info] Loading {os.path.basename(batch_file)}...")
+            df = pd.read_parquet(batch_file)
+            all_batches.append(df)
+        
+        spike_df = pd.concat(all_batches, ignore_index=True)
+        print(f"  [Info] Aggregated {len(spike_df)} total spikes across {spike_df['trial'].nunique()} trials")
+        
+        # Add neuron labels
         id_to_label_map = data["completeness"].set_index("root_id")["label"]
         spike_df["neuron_label"] = spike_df["neuron_id"].map(id_to_label_map)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_dir = os.path.join(
-        config["output_config"]["base_output_directory"],
-        config["output_config"]["output_directory_name"],
-    )
-    save_dir = save_dir + "--" + timestamp
-    os.makedirs(save_dir, exist_ok=True)
-    with open(os.path.join(save_dir, "config.json"), "w") as f:
-        json.dump(config, f, indent=2)
-
-    if not spike_df.empty:
-        spike_df["neuron_id"] = spike_df["neuron_id"].fillna(0).astype(np.int64)
-
-    spike_df.to_parquet(
-        os.path.join(save_dir, "spikes.parquet"), compression="gzip", engine="pyarrow"
-    )
-    print(f"  [Info] Aggregated spike data saved to: {save_dir}")
-
-    if not spike_df.empty and "raster_plot_config" in config:
-        create_raster_plot(spike_df, save_dir, data, config["raster_plot_config"])
-
-    t_run_s = params["t_run_ms"] / 1000.0
-    post_process(spike_df, data, save_dir, n_trials, t_run_s)
-
-
-def run_trial_wrapper(trial_num, config, data, params):
-    """A helper function that prepares and runs a single trial."""
-    print(f"    - Starting trial {trial_num + 1}...")
-    stimulated_neurons_trial = prepare_stimulation(config, data)
-    silenced_indices_trial = prepare_silencing(config, data)
-    spk_mon = run_single_trial(
-        params, data, stimulated_neurons_trial, silenced_indices_trial
-    )
-
-    # Extract raw data and return a simple dictionary instead of the Brian2 object
-    return {
-        "spike_indices": np.array(spk_mon.i),
-        "spike_times_ms": np.array(spk_mon.t / ms),
-        "stimulated_neurons": stimulated_neurons_trial,
-    }
+        
+        # Save combined file
+        combined_path = os.path.join(exp_dir, "spikes_combined.parquet")
+        spike_df.to_parquet(combined_path, compression="gzip", engine="pyarrow")
+        print(f"  [Info] Saved combined spikes to: {combined_path}")
+        
+        # Run post-processing
+        n_trials = spike_df['trial'].nunique()
+        t_run_s = params["t_run_ms"] / 1000.0
+        post_process(spike_df, data, exp_dir, n_trials, t_run_s)
+        
+        # Create raster plot if enabled
+        if "raster_plot_config" in config and config["raster_plot_config"].get("enabled", False):
+            create_raster_plot(spike_df, exp_dir, data, config["raster_plot_config"])
+        
+        print(f"  [✓] Completed processing: {exp_name}\n")
+    
+    print("\n" + "="*70)
+    print("ALL POST-PROCESSING COMPLETE")
+    print("="*70 + "\n")
 
 
 if __name__ == "__main__":
-    import sys
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_path", nargs='?', default=None, help="Path to config JSON (for batch mode)")
+    parser.add_argument("--batch_id", type=int, default=None, help="The ID of this job batch")
+    parser.add_argument("--trials", type=int, default=50, help="Trials per batch")
+    parser.add_argument("--use_cuda", action="store_true", help="Use CUDA/GPU acceleration")
+    parser.add_argument("--gpu_id", type=int, default=0, help="GPU device ID to use")
+    parser.add_argument("--postprocess", action="store_true", help="Run post-processing")
+    parser.add_argument("--base_dir", type=str, default="simulation_results", 
+                       help="Base output directory containing experiments (default: simulation_results)")
+    parser.add_argument("--experiment", type=str, default=None, 
+                       help="Specific experiment name to process (default: process all)")
+    args = parser.parse_args()
 
-    if len(sys.argv) != 2:
-        print("Usage: python new_model.py <path_to_config.json>")
-        sys.exit(1)
-
-    config_file_path = sys.argv[1]
-
-    print("=" * 50)
-    print("Starting Connectomics Experiment")
-    print("=" * 50)
-
-    run_experiment(config_file_path)
-
-    print("\n" + "=" * 50)
-    print("Experiment Finished.")
-    print("=" * 50)
+    if args.postprocess:
+        # Post-processing mode - aggregate all experiments or specific one
+        aggregate_and_postprocess(
+            base_output_dir=args.base_dir,
+            experiment_name=args.experiment
+        )
+    elif args.batch_id is not None and args.config_path is not None:
+        # Batch mode - run trials
+        run_batch(args.config_path, args.batch_id, args.trials, 
+                  use_cuda=args.use_cuda, gpu_id=args.gpu_id)
+    else:
+        print("  [Error] Must specify either --postprocess or (config_path and --batch_id)")
+        print("\n  Examples:")
+        print("    Batch mode:  python new_model.py config.json --batch_id 1 --trials 50")
+        print("    Post-process all: python new_model.py --postprocess")
+        print("    Post-process one: python new_model.py --postprocess --experiment MultiRun1")
+        exit(1)
