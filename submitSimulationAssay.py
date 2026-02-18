@@ -3,8 +3,8 @@ import subprocess
 import math
 
 # --- Configuration ---
-TOTAL_TRIALS = 100  
-TRIALS_PER_BATCH = 20
+TOTAL_TRIALS = 10000
+TRIALS_PER_BATCH = 128
 # ---------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,14 +29,14 @@ num_batches = math.ceil(TOTAL_TRIALS / TRIALS_PER_BATCH)
 print(f"Plan: Running {TOTAL_TRIALS} trials across {num_batches} jobs (array) for each config.")
 
 for cfile in jobs:
-    if cfile.startswith(".") or not cfile.endswith(".json"):
+    if cfile.startswith(".") or cfile.startswith("_") or not cfile.endswith(".json"):
         continue
 
     text = f"""#!/bin/bash
 
             #BSUB -n 32
-            #BSUB -W 120
-            #BSUB -R "rusage[mem=4GB/task]"
+            #BSUB -W 20
+            #BSUB -R "rusage[mem=1GB/task]"
             #BSUB -R "span[hosts=1]"
             #BSUB -J {cfile}[1-{num_batches}]
             #BSUB -o {HPC_PROJECT_DIR}/out_files/out.%J.%I

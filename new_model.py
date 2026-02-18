@@ -155,50 +155,52 @@ def prepare_silencing(config, data, batch_seed_offset):
     return indices_to_silence
 
 
-def post_process(stats_file, data, save_dir, n_trials, t_run_s):
-    """Calculates summary statistics from aggregated HDF5 data."""
+def post_process(exp_dir, data, n_trials, t_run_s):
+    """Calculates summary statistics from aggregated HDF5 data in separate batch files."""
     print("  [Info] Performing post-processing analysis from aggregated statistics...")
     
-    # Read aggregated statistics from HDF5
-    with h5py.File(stats_file, 'r') as f:
-        # Collect all batch data
-        all_spike_counts = []
-        all_first_spikes = []
-        
-        batch_names = [k for k in sorted(f.keys()) if k.startswith('batch_')]
-        
-        if not batch_names:
-            print("  [Warning] No batch data found in HDF5 file.")
-            pd.DataFrame(
-                columns=[
-                    "group", "side", "avg_number_of_spikes", "avg_unique_spiking_neurons",
-                    "mean_spike_rate_hz", "std_spike_rate_hz", "first_spike_time_ms",
-                    "first_spike_neuron_label", "first_spike_neuron_id",
-                ]
-            ).to_csv(os.path.join(save_dir, "summary_analysis.csv"), index=False)
-            return
-        
-        print(f"  [Info] Found {len(batch_names)} batches: {', '.join(batch_names)}")
-        
-        for batch_name in batch_names:
-            batch_group = f[batch_name]
-            all_spike_counts.append(batch_group['spike_counts'][:])
-            all_first_spikes.append(batch_group['first_spikes'][:])
-        
-        if not all_spike_counts:
-            print("  [Warning] No batch data found in HDF5 file.")
-            pd.DataFrame(
-                columns=[
-                    "group", "side", "avg_number_of_spikes", "avg_unique_spiking_neurons",
-                    "mean_spike_rate_hz", "std_spike_rate_hz", "first_spike_time_ms",
-                    "first_spike_neuron_label", "first_spike_neuron_id",
-                ]
-            ).to_csv(os.path.join(save_dir, "summary_analysis.csv"), index=False)
-            return
-        
-        # Stack all batches: shape will be (n_trials, n_neurons)
-        spike_counts_array = np.vstack(all_spike_counts)
-        first_spikes_array = np.vstack(all_first_spikes)
+    # Find all batch HDF5 files
+    batch_files = sorted(glob(os.path.join(exp_dir, "batch_*_statistics.h5")))
+    
+    if not batch_files:
+        print("  [Warning] No batch HDF5 files found.")
+        pd.DataFrame(
+            columns=[
+                "group", "side", "avg_number_of_spikes", "std_number_of_spikes", 
+                "median_number_of_spikes", "avg_unique_spiking_neurons", "std_unique_spiking_neurons",
+                "mean_spike_rate_hz", "std_spike_rate_hz", "median_spike_rate_hz",
+                "first_spike_time_ms", "first_spike_neuron_label", "first_spike_neuron_id",
+            ]
+        ).to_csv(os.path.join(exp_dir, "summary_analysis.csv"), index=False)
+        return
+    
+    print(f"  [Info] Found {len(batch_files)} batch files")
+    
+    # Read aggregated statistics from all batch files
+    all_spike_counts = []
+    all_first_spikes = []
+    
+    for batch_file in batch_files:
+        with h5py.File(batch_file, 'r') as f:
+            data_group = f['data']
+            all_spike_counts.append(data_group['spike_counts'][:])
+            all_first_spikes.append(data_group['first_spikes'][:])
+    
+    if not all_spike_counts:
+        print("  [Warning] No batch data found in HDF5 files.")
+        pd.DataFrame(
+            columns=[
+                "group", "side", "avg_number_of_spikes", "std_number_of_spikes",
+                "median_number_of_spikes", "avg_unique_spiking_neurons", "std_unique_spiking_neurons",
+                "mean_spike_rate_hz", "std_spike_rate_hz", "median_spike_rate_hz",
+                "first_spike_time_ms", "first_spike_neuron_label", "first_spike_neuron_id",
+            ]
+        ).to_csv(os.path.join(exp_dir, "summary_analysis.csv"), index=False)
+        return
+    
+    # Stack all batches: shape will be (n_trials, n_neurons)
+    spike_counts_array = np.vstack(all_spike_counts)
+    first_spikes_array = np.vstack(all_first_spikes)
     
     print(f"  [Info] Loaded statistics for {spike_counts_array.shape[0]} trials and {spike_counts_array.shape[1]} neurons")
     
@@ -222,18 +224,23 @@ def post_process(stats_file, data, save_dir, n_trials, t_run_s):
         # Get spike counts for this group across all trials
         group_spike_counts = spike_counts_array[:, indices].sum(axis=1)  # Sum across neurons in group
         avg_spikes = group_spike_counts.mean()
+        std_spikes = group_spike_counts.std()
+        median_spikes = np.median(group_spike_counts)
         
         # Count unique spiking neurons per trial
         unique_spikers_per_trial = (spike_counts_array[:, indices] > 0).sum(axis=1)
         avg_unique_spikers = unique_spikers_per_trial.mean()
+        std_unique_spikers = unique_spikers_per_trial.std()
         
         # Calculate firing rates
         rates_per_trial = group_spike_counts / t_run_s
         mean_rate, std_rate = rates_per_trial.mean(), rates_per_trial.std()
+        median_rate = np.median(rates_per_trial)
         
         # Find first spike across all trials and neurons in this group
         group_first_spikes = first_spikes_array[:, indices]
         first_spike_time = np.nanmin(group_first_spikes)
+        
         
         if not np.isnan(first_spike_time):
             # Find which neuron had the first spike
@@ -264,9 +271,13 @@ def post_process(stats_file, data, save_dir, n_trials, t_run_s):
             "group": group_name,
             "side": side,
             "avg_number_of_spikes": avg_spikes,
+            "std_number_of_spikes": std_spikes,
+            "median_number_of_spikes": median_spikes,
             "avg_unique_spiking_neurons": avg_unique_spikers,
+            "std_unique_spiking_neurons": std_unique_spikers,
             "mean_spike_rate_hz": mean_rate,
             "std_spike_rate_hz": std_rate,
+            "median_spike_rate_hz": median_rate,
             "first_spike_time_ms": first_spike_time,
             "first_spike_neuron_label": first_spike_label,
             "first_spike_neuron_id": np.int64(first_spike_id) if first_spike_id else 0,
@@ -304,9 +315,11 @@ def post_process(stats_file, data, save_dir, n_trials, t_run_s):
             rates_per_trial = neuron_spike_counts / t_run_s
             std_rate = rates_per_trial.std()
             avg_spikes = neuron_spike_counts.mean()
-            
-            # Get first spike time
+            std_spikes = neuron_spike_counts.std()
+            median_spikes = np.median(neuron_spike_counts)
+            median_rate = np.median(rates_per_trial)
             first_spike_time = np.nanmin(first_spikes_array[:, neuron_global_idx])
+
             
             # Get neuron info
             neuron_id = data["idx_to_id"][neuron_global_idx]
@@ -322,9 +335,13 @@ def post_process(stats_file, data, save_dir, n_trials, t_run_s):
                 "group": f"INDIVIDUAL: {neuron_label}",
                 "side": side,
                 "avg_number_of_spikes": avg_spikes,
+                "std_number_of_spikes": std_spikes,
+                "median_number_of_spikes": median_spikes,
                 "avg_unique_spiking_neurons": 1.0,
+                "std_unique_spiking_neurons": 0.0,
                 "mean_spike_rate_hz": mean_rate,
                 "std_spike_rate_hz": std_rate,
+                "median_spike_rate_hz": median_rate,
                 "first_spike_time_ms": first_spike_time,
                 "first_spike_neuron_label": neuron_label,
                 "first_spike_neuron_id": np.int64(neuron_id),
@@ -341,8 +358,74 @@ def post_process(stats_file, data, save_dir, n_trials, t_run_s):
         )
         summary_df['avg_number_of_spikes'] = np.ceil(summary_df['avg_number_of_spikes'])
 
-    summary_df.to_csv(os.path.join(save_dir, "summary_analysis.csv"), index=False)
+    summary_df.to_csv(os.path.join(exp_dir, "summary_analysis.csv"), index=False)
     print("  [Info] Post-processing complete. Summary file saved.")
+    
+    # ========================================================================
+    # CREATE PER-NEURON STATISTICS FILE
+    # ========================================================================
+    print("  [Info] Generating per-neuron statistics file...")
+    
+    per_neuron_list = []
+    
+    for neuron_idx in range(spike_counts_array.shape[1]):
+        # Get spike counts for this neuron across all trials
+        neuron_spike_counts = spike_counts_array[:, neuron_idx]
+        
+        # Calculate statistics
+        total_spikes = neuron_spike_counts.sum()
+        mean_spikes = neuron_spike_counts.mean()
+        std_spikes = neuron_spike_counts.std()
+        median_spikes = np.median(neuron_spike_counts)
+        
+        # Calculate firing rate statistics
+        rates_per_trial = neuron_spike_counts / t_run_s
+        mean_rate = rates_per_trial.mean()
+        std_rate = rates_per_trial.std()
+        median_rate = np.median(rates_per_trial)
+        first_spike_time = np.nanmin(first_spikes_array[:, neuron_idx])
+        
+        
+        # Count how many trials this neuron fired in
+        trials_fired = (neuron_spike_counts > 0).sum()
+        percent_trials_fired = (trials_fired / n_trials) * 100
+        
+        # Get neuron info
+        neuron_id = data["idx_to_id"][neuron_idx]
+        neuron_label = data["completeness"].loc[
+            data["completeness"]["root_id"] == neuron_id, "label"
+        ].values[0] if "label" in data["completeness"].columns else str(neuron_id)
+        
+        # Determine side
+        side = "N/A"
+        if isinstance(neuron_label, str) and neuron_label.endswith(("_L", "_R")):
+            side = neuron_label[-1]
+        
+        per_neuron_list.append({
+            "neuron_index": neuron_idx,
+            "neuron_id": np.int64(neuron_id),
+            "neuron_label": neuron_label,
+            "side": side,
+            "total_spikes": int(total_spikes),
+            "mean_spikes_per_trial": mean_spikes,
+            "std_spikes_per_trial": std_spikes,
+            "median_spikes_per_trial": median_spikes,
+            "mean_firing_rate_hz": mean_rate,
+            "std_firing_rate_hz": std_rate,
+            "median_firing_rate_hz": median_rate,
+            "first_spike_time_ms": first_spike_time if not np.isnan(first_spike_time) else None,
+            "trials_fired": int(trials_fired),
+            "percent_trials_fired": percent_trials_fired
+        })
+    
+    per_neuron_df = pd.DataFrame(per_neuron_list)
+    
+    # Sort by mean firing rate (highest first)
+    per_neuron_df = per_neuron_df.sort_values("mean_firing_rate_hz", ascending=False)
+    
+    per_neuron_df.to_csv(os.path.join(exp_dir, "per_neuron_statistics.csv"), index=False)
+    print(f"  [Info] Per-neuron statistics saved ({len(per_neuron_df):,} neurons)")
+    print(f"       File: per_neuron_statistics.csv")
 
 
 def create_raster_plot(raster_data_file, save_dir, data, plot_config, trial_to_plot=0):
@@ -361,7 +444,18 @@ def create_raster_plot(raster_data_file, save_dir, data, plot_config, trial_to_p
         print(f"  [Warning] Raster data file not found: {raster_data_file}")
         return
     
-    spike_df = pd.read_parquet(raster_data_file)
+    try:
+        spike_df = pd.read_parquet(raster_data_file)
+    except (OSError, Exception) as e:
+        print(f"  [Error] Corrupted raster data file: {raster_data_file}")
+        print(f"          Error: {e}")
+        print(f"  [Info] Deleting corrupted file. Re-run batch 1 to regenerate.")
+        try:
+            os.remove(raster_data_file)
+            print(f"  [Info] Corrupted file deleted.")
+        except:
+            pass
+        return
     
     # Filter to the specific trial
     trial_spikes = spike_df[spike_df['trial'] == trial_to_plot].copy()
@@ -681,59 +775,31 @@ def run_batch(config_path, batch_id, trials_per_batch):
     spike_counts_batch = np.array([r["neuron_spike_counts"] for r in results])
     first_spikes_batch = np.array([r["first_spike_times"] for r in results])
     
-    # Save aggregated statistics to HDF5
-    stats_file = os.path.join(save_dir, "experiment_statistics.h5")
-    print(f"  [Info] Saving aggregated statistics to HDF5: {stats_file}")
+    # Save aggregated statistics to SEPARATE HDF5 file per batch (no locking!)
+    stats_file = os.path.join(save_dir, f"batch_{batch_id}_statistics.h5")
+    print(f"  [Info] Saving batch {batch_id} statistics to: {stats_file}")
     
-    # Retry logic for file locking
-    import time
-    max_retries = 30
-    retry_delay = 10  # seconds
+    with h5py.File(stats_file, 'w') as f:  # 'w' = create new file (no conflicts)
+        batch_group = f.create_group("data")
+        batch_group.create_dataset(
+            "spike_counts", 
+            data=spike_counts_batch, 
+            compression="gzip",
+            compression_opts=9
+        )
+        batch_group.create_dataset(
+            "first_spikes", 
+            data=first_spikes_batch, 
+            compression="gzip",
+            compression_opts=9
+        )
+        
+        # Store metadata
+        batch_group.attrs["batch_id"] = batch_id
+        batch_group.attrs["n_trials"] = trials_per_batch
+        batch_group.attrs["first_global_trial"] = (batch_id - 1) * trials_per_batch
     
-    for attempt in range(max_retries):
-        try:
-            with h5py.File(stats_file, 'a') as f:
-                batch_group_name = f"batch_{batch_id}"
-                
-                # Delete if exists (for reruns)
-                if batch_group_name in f:
-                    print(f"  [Info] Batch {batch_id} already exists, overwriting...")
-                    del f[batch_group_name]
-                
-                batch_group = f.create_group(batch_group_name)
-                batch_group.create_dataset(
-                    "spike_counts", 
-                    data=spike_counts_batch, 
-                    compression="gzip",
-                    compression_opts=9
-                )
-                batch_group.create_dataset(
-                    "first_spikes", 
-                    data=first_spikes_batch, 
-                    compression="gzip",
-                    compression_opts=9
-                )
-                
-                # Store metadata
-                batch_group.attrs["batch_id"] = batch_id
-                batch_group.attrs["n_trials"] = trials_per_batch
-                batch_group.attrs["first_global_trial"] = (batch_id - 1) * trials_per_batch
-                
-                # Debug: Print what's in the file
-                print(f"  [Debug] HDF5 file now contains groups: {list(f.keys())}")
-            
-            # Success - break out of retry loop
-            print(f"  [Info] Batch {batch_id} aggregated statistics saved to HDF5")
-            break
-            
-        except (BlockingIOError, OSError) as e:
-            if attempt < max_retries - 1:
-                wait_time = retry_delay + random.randint(0, 5)  # Add jitter
-                print(f"  [Warning] File locked, retrying in {wait_time}s (attempt {attempt+1}/{max_retries})...")
-                time.sleep(wait_time)
-            else:
-                print(f"  [Error] Failed to write to HDF5 after {max_retries} attempts")
-                raise
+    print(f"  [Info] Batch {batch_id} statistics saved successfully")
     
     # Save full spike data for rasterization (first 5 trials only)
     if full_spike_results:
@@ -817,10 +883,10 @@ def aggregate_and_postprocess(base_output_dir=None, experiment_name=None):
     for exp_dir in experiment_dirs:
         exp_name = os.path.basename(exp_dir)
         
-        # Check if this directory has HDF5 statistics file
-        stats_file = os.path.join(exp_dir, "experiment_statistics.h5")
-        if not os.path.exists(stats_file):
-            print(f"  [Skip] No HDF5 statistics file found in {exp_name}")
+        # Check if this directory has any batch HDF5 files
+        batch_files = glob(os.path.join(exp_dir, "batch_*_statistics.h5"))
+        if not batch_files:
+            print(f"  [Skip] No batch HDF5 files found in {exp_name}")
             continue
         
         print(f"\n{'='*70}")
@@ -837,26 +903,17 @@ def aggregate_and_postprocess(base_output_dir=None, experiment_name=None):
         data = load_data(config["file_paths"])
         params = config["simulation_parameters"]
         
-        # Count trials from HDF5
-        with h5py.File(stats_file, 'r') as f:
-            batch_names = [k for k in f.keys() if k.startswith('batch_')]
-            n_batches = len(batch_names)
-            
-            if n_batches == 0:
-                print(f"  [Warning] No batches found in HDF5 file. Skipping {exp_name}")
-                continue
-            
-            # Get number of trials from first batch
-            first_batch_name = sorted(batch_names)[0]
-            first_batch = f[first_batch_name]
-            trials_per_batch = first_batch['spike_counts'].shape[0]
-            n_trials = n_batches * trials_per_batch
+        # Count trials from batch files
+        n_batches = len(batch_files)
+        with h5py.File(batch_files[0], 'r') as f:
+            trials_per_batch = f['data']['spike_counts'].shape[0]
+        n_trials = n_batches * trials_per_batch
         
-        print(f"  [Info] Found {n_batches} batches with {trials_per_batch} trials each = {n_trials} total trials")
+        print(f"  [Info] Found {n_batches} batch files with {trials_per_batch} trials each = {n_trials} total trials")
         
         # Run post-processing
         t_run_s = params["t_run_ms"] / 1000.0
-        post_process(stats_file, data, exp_dir, n_trials, t_run_s)
+        post_process(exp_dir, data, n_trials, t_run_s)
         
         # Create raster plot if enabled
         if "raster_plot_config" in config and config["raster_plot_config"].get("enabled", False):
@@ -864,8 +921,12 @@ def aggregate_and_postprocess(base_output_dir=None, experiment_name=None):
             if os.path.exists(raster_data_file):
                 print(f"  [Info] Creating raster plots from saved data...")
                 # Create plots for trials 0-4
-                for trial_num in range(5):
-                    create_raster_plot(raster_data_file, exp_dir, data, config["raster_plot_config"], trial_to_plot=trial_num)
+                try:
+                    for trial_num in range(5):
+                        create_raster_plot(raster_data_file, exp_dir, data, config["raster_plot_config"], trial_to_plot=trial_num)
+                except Exception as e:
+                    print(f"  [Warning] Raster plot generation failed: {e}")
+                    print(f"  [Info] Continuing with post-processing...")
             else:
                 print(f"  [Warning] Raster data file not found: {raster_data_file}")
         
